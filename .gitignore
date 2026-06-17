@@ -1,9 +1,18 @@
 # === UNIVERSAL ===
+OTHER_REPOS/
+screenshots/
 .DS_Store
 report_*.txt
 _temp*.?*
 # === LOCAL ===
 # Template-only ignores.
+# === SWIFT ===
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
 # === PYTHON ===
 build/
 dist/
@@ -11,3 +20,7 @@ sdist/
 *.egg
 *.egg-info/
 site/
+# screenshot capture byproducts
+nohup.out
+USBImagerApp_*.png
+Terminal_*.png
