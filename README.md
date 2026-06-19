@@ -1,10 +1,11 @@
 # swift-usb-imager
 
-SwiftUI app for Apple Silicon Mac that flashes ISO and IMG disk images to USB drives and SD cards with SHA-512 verification. Targets macOS 26 Tahoe with the native Liquid Glass design language. Also ships a thin usbimager terminal CLI for scripted or automated flashing workflows.
+SwiftUI USB and SD card imager for Apple Silicon Macs that flashes ISO and IMG disk images with SHA-512 verification. Built for macOS 26 Tahoe with native Liquid Glass styling, plus a thin usbimager CLI for scripted flashing.
+
 
 ## Status
 
-Version 26.06.0. Early development. Core library modules, UI, and CLI compile and pass 325 tests. Signing and privileged helper installation are pending; the GUI and CLI are fully usable up to the flash step.
+Version 26.06.0. Early development. The library modules, SwiftUI app, and `usbimager` CLI compile and pass the test suite (350+ tests), and the GUI and CLI are fully usable up to the flash step. The privileged write path is still in progress: there is no installed daemon yet, so a flash attempt fails at connection time. Bringing it up requires the XPC daemon wiring plus Developer ID signing and SMAppService installation (see [docs/SIGNING.md](docs/SIGNING.md)). In parallel, a least-persistent authopen-based raw-disk-write model is under active research; its verdict is pending a hardware run, and no production flash code commits to a backend yet.
 
 ## Quick start
 
@@ -18,7 +19,7 @@ swift test
 .build/arm64-apple-macosx/debug/USBImagerApp
 ```
 
-Note: flashing requires a signed, installed privileged helper (see [docs/SIGNING.md](docs/SIGNING.md)). The GUI launches and is navigable without it. For CLI usage (list/verify/flash/open subcommands) see [docs/USAGE.md](docs/USAGE.md).
+Note: flashing is not yet operational; it needs the privileged write path completed and a signed, installed helper (see [docs/SIGNING.md](docs/SIGNING.md)). The GUI launches and is navigable without it. For CLI usage (`list`, `verify`, `flash`, `open` subcommands) see [docs/USAGE.md](docs/USAGE.md).
 
 ## Documentation
 
