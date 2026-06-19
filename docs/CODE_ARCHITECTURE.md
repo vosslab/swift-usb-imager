@@ -5,32 +5,54 @@ writes disk images to removable USB media using a two-process privilege-separati
 design. The unprivileged app and the root-level helper communicate through a
 named Mach service (NSXPCConnection); image bytes never travel over XPC.
 
+The GUI (`USBImagerApp`) is the primary product. A thin terminal CLI (`usbimager`,
+product `USBImagerCLI`) provides the same four-step workflow headlessly through
+`USBImagerCore`, the shared GUI-independent seam.
+
 ---
 
 ## Layered design
 
 ```
-+----------------------------------------------------------+
-|  USBImagerApp  (AppUI + @main)  -- unprivileged app      |
-|  AppViewModel  @Observable @MainActor state machine      |
-|  SwiftUI: SourcePanel  TargetPanel  FlashPanel  VerifyPanel |
-+----------------------------------------------------------+
-                      |
-         DiskModel    |    KeychainStore    Verifier
-         (enumerate   |    (trusted         (SHA-512
-          + filter)   |     checksum cache)  streaming)
-                      |
-            FlashEngine (actor)
-            HelperProtocol (shared XPC contract, JSON-Data)
-                      |
-              XPC / NSXPCConnection
-              (named Mach service)
-                      |
-+----------------------------------------------------------+
-|  PrivilegedHelper  -- root LaunchDaemon (SMAppService)   |
-|  HelperService (NSObject, HelperXPCProtocol)             |
-|  auth stub -> HelperSafety -> Unmount -> WriteJob -> VerifyJob |
-+----------------------------------------------------------+
++---------------------------------------------------------------+
+|  USBImagerApp  (@main struct USBImagerApp: App)               |
+|  SwiftUI: SourcePanel  TargetPanel  FlashPanel  VerifyPanel   |
+|  AppViewModel @Observable @MainActor state machine            |
+|  URL-scheme handoff (usbimager://open?...) + AutoExitCoordinator|
++---------------------------------------------------------------+
+           |                              |
+           v                             |
+   USBImagerCore (Library)               |
+   ChecksumService  ImageSourceService   |
+   DiskTargetService  FlashOrchestrationService
+   XPCFlashEngineFactory                 |
+   CoreError / CoreExitCode              |
+   FlashProgressData                     |
+           |                             |
+   DiskModel    Verifier    KeychainStore  FlashEngine
+                                         |
+                              HelperProtocol (shared XPC contract)
+                                         |
+                              XPC / NSXPCConnection
+                              (Mach service: com.nsh.usbimager.helper)
+                                         |
++---------------------------------------------------------------+
+|  PrivilegedHelper  -- root LaunchDaemon (SMAppService)        |
+|  HelperService (NSObject, HelperXPCProtocol)                  |
+|  HelperSafety -> Unmount -> WriteJob -> VerifyJob             |
++---------------------------------------------------------------+
+
++---------------------------------------------------------------+
+|  USBImagerCLI (executable "usbimager")                        |
+|  Subcommands: list / verify / flash / open                    |
+|  Depends on USBImagerCore + ArgumentParser only               |
++---------------------------------------------------------------+
+
++---------------------------------------------------------------+
+|  USBImagerShots (executable)                                  |
+|  Offscreen ImageRenderer screenshot harness                   |
+|  Depends on AppUI + USBImagerCore + DiskModel                 |
++---------------------------------------------------------------+
 ```
 
 Elevation model: the helper is installed once via SMAppService. Per-job
@@ -43,7 +65,7 @@ pinning and an AuthorizationRef right before any destructive action.
 
 ```
 Step 1 - Select source
-  User picks .iso/.img via fileImporter
+  User picks .iso/.img via fileImporter (GUI) or supplies --source PATH (CLI)
   AppViewModel stats the file -> sourceImageBytes
   DiskEnumerator refreshes the live disk list
   DiskSafety filters to validTargets (removable, external, < 450 GB, ...)
@@ -55,7 +77,8 @@ Step 2 - Select target
   KeychainStore is queried for a prior trusted hit
 
 Step 3 - Flash
-  AppViewModel calls FlashEngine.flash(source:target:advisorySHA512:)
+  AppViewModel (GUI) / FlashCommand (CLI) calls FlashOrchestrationService.flash()
+  FlashOrchestrationService calls FlashEngine.flash(source:target:advisorySHA512:)
   FlashEngine builds FlashRequest (paths only, no image bytes)
   XPC: HelperService.flash(requestData:progress:result:)
   Helper:
@@ -103,27 +126,40 @@ SecCode peer pinning (CodeSigningRequirement) and an AuthorizationRef right.
 
 ## Module table
 
-| Module | Process | Role |
-| --- | --- | --- |
-| DiskModel | App | DiskArbitration/IOKit enumeration; DiskDescriptor value type; DiskSafety predicates (8 RejectionReasons, 450 GB cap); DiskEnumerator AsyncStream of disk events; DiskIdentity BSD-name helpers |
-| HelperProtocol | Both | Shared XPC @objc protocol (HelperXPCProtocol); Codable control-plane types (FlashRequest, FlashProgress, FlashResult, JobID, SourceAccess, FlashOutcome); JSON-Data marshalling helpers; CodeSigningRequirement |
-| Verifier | Both | CryptoKit SHA-512 streaming (SHA512Hasher, SHA512Digest); one-shot sha512(of:); ChecksumFile SHA512SUMS parser; validatePastedHex; MatchResult; ChecksumFileError |
-| KeychainStore | App | Trusted-checksum cache backed by Keychain Services; KeychainBackend protocol for DI; InMemoryKeychainBackend for tests; TrustedChecksum (sha512 + imageByteLength match key) |
-| FlashEngine | App | FlashEngine actor; HelperConnection protocol + XPCHelperConnection; FlashEngineError; AsyncStream<FlashProgress> relay; cancel forwarding |
-| AppUI | App | AppViewModel @Observable @MainActor state machine; FlashState enum (9 cases); FlashProgressSnapshot; ChecksumMatchOutcome; OfficialChecksumSource; four SwiftUI panels (SourcePanel, TargetPanel, FlashPanel, VerifyPanel); RootView GlassEffectContainer; StyleHelpers (Liquid Glass modifiers, layout constants) |
-| USBImagerApp | App | `AppEntry` (@main, parses launch args via swift-argument-parser); `LaunchOptions` (ParsableArguments: --source, --auto-exit); `AppDelegate` (AppKit startup-window fix for --source PATH space-form hang); wires production XPCHelperConnection + AppViewModel |
-| PrivilegedHelper | Helper | HelperService NSObject (HelperXPCProtocol); HelperAuthorization (pluggable, stub today); HelperSafety independent re-check; Unmount (diskutil + eject); WriteJob (raw block-aligned write, F_NOCACHE, DKIOCGETBLOCKSIZE); VerifyJob (read-back SHA-512); CancellationToken; BlockMath; HelperErrors |
+| Module | Product kind | Process | Role |
+| --- | --- | --- | --- |
+| DiskModel | Library | App | DiskArbitration/IOKit enumeration; DiskDescriptor value type; DiskSafety predicates (8 RejectionReasons, 450 GB cap); DiskEnumerator AsyncStream of disk events; DiskIdentity BSD-name helpers |
+| HelperProtocol | Library | Both | Shared XPC @objc protocol (HelperXPCProtocol); Codable control-plane types (FlashRequest, FlashProgress, FlashResult, JobID, SourceAccess, FlashOutcome); JSON-Data marshalling helpers; CodeSigningRequirement |
+| Verifier | Library | Both | CryptoKit SHA-512 streaming (SHA512Hasher, SHA512Digest); one-shot sha512(of:); ChecksumFile SHA512SUMS parser; validatePastedHex; MatchResult; ChecksumFileError |
+| KeychainStore | Library | App | Trusted-checksum cache backed by Keychain Services; KeychainBackend protocol for DI; InMemoryKeychainBackend for tests; TrustedChecksum (sha512 + imageByteLength match key) |
+| FlashEngine | Library | App | FlashEngine actor; HelperConnection protocol + XPCHelperConnection; FlashEngineError; AsyncStream<FlashProgress> relay; cancel forwarding |
+| USBImagerCore | Library | App/CLI | GUI-independent workflow seam. Service protocols: ChecksumService, ImageSourceService, DiskTargetService, FlashOrchestrationService. FlashEngineFactory / XPCFlashEngineFactory. CoreError / CoreExitCode. FlashProgressData. Helper identity constants (Mach service name + designated requirement). No SwiftUI/AppKit. Depends on DiskModel, Verifier, FlashEngine, KeychainStore, HelperProtocol. |
+| AppUI | Library | App | AppViewModel @Observable @MainActor state machine; FlashState enum (9 cases); FlashProgressSnapshot; four SwiftUI panels (SourcePanel, TargetPanel, FlashPanel, VerifyPanel); RootView GlassEffectContainer; StyleHelpers (Liquid Glass modifiers, documentationRender flag, layout constants). Depends on USBImagerCore. |
+| USBImagerApp | Executable | App | `@main struct USBImagerApp: App`; constructs AppViewModel wired to production XPC helper; receives source handoff via `.onOpenURL` (URL scheme `usbimager://open?source=...&autoExitAfter=N`); `decodeHandoff` decodes and validates; `AutoExitCoordinator` gates the clean-quit timer on both source-preselected and window-visible; Info.plist declares CFBundleURLTypes; bundle assembled by `build_debug.sh`. |
+| PrivilegedHelper | Library | Helper | HelperService NSObject (HelperXPCProtocol); HelperAuthorization (pluggable, stub today); HelperSafety independent re-check; Unmount (diskutil + eject); WriteJob (raw block-aligned write, F_NOCACHE, DKIOCGETBLOCKSIZE); VerifyJob (read-back SHA-512); CancellationToken; BlockMath; HelperErrors |
+| USBImagerCLI | Executable ("usbimager") | App | Thin terminal CLI. Subcommands: `list`, `verify`, `flash`, `open`. CoreServices injectable seam (test override via `Usbimager.servicesOverride`). Shared exit path maps CoreError -> CoreExitCode -> process status. Depends on USBImagerCore + ArgumentParser only; no direct FlashEngine/DiskModel/AppUI imports. |
+| USBImagerShots | Executable | App | Offscreen screenshot render harness. Builds AppViewModel with injected fake services; renders RootView to PNG via ImageRenderer with `documentationRender = true` (solid card, no Liquid Glass); sets `NSApplication.activationPolicy(.prohibited)` (no visible window). Depends on AppUI, USBImagerCore, DiskModel. |
 
 ---
 
 ## Dependency graph
 
 ```
-USBImagerApp -> AppUI -> FlashEngine -> HelperProtocol
-                      -> DiskModel
-                      -> Verifier
-                      -> KeychainStore -> Verifier
+USBImagerApp -> AppUI -> USBImagerCore -> FlashEngine -> HelperProtocol
+                                      -> DiskModel
+                                      -> Verifier
+                                      -> KeychainStore -> Verifier
+                      -> FlashEngine (direct, for XPCHelperConnection)
+                      -> DiskModel   (direct)
+                      -> KeychainStore (direct)
              -> ArgumentParser (swift-argument-parser, external)
+
+USBImagerCLI -> USBImagerCore
+             -> ArgumentParser
+
+USBImagerShots -> AppUI
+              -> USBImagerCore
+              -> DiskModel
 
 PrivilegedHelper -> HelperProtocol
                  -> DiskModel
@@ -147,9 +183,26 @@ KeychainStore -> Verifier
 
 ---
 
+## CLI exit-code contract
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Verification mismatch |
+| 2 | Bad input / usage |
+| 3 | Privileged helper unavailable or not approved |
+| 4 | Flash failed mid-write |
+| 5 | Operation cancelled |
+| 6 | GUI app binary/bundle not locatable (open subcommand) |
+
+The mapping is frozen in `CoreExitCode` (Sources/USBImagerCore/CoreError.swift);
+no subcommand invents its own numbers.
+
+---
+
 ## What is not yet wired
 
 - SMAppService registration and the root LaunchDaemon plist.
-- Real SecCode + AuthorizationRef peer pinning in HelperAuthorization.
-- Mach service name and code-signing requirement constants (placeholders in USBImagerApp).
-- File-descriptor and staged-copy SourceAccess variants (SourceAccess enum shape is final; only .absolutePath executes today).
+- Real SecCode + AuthorizationRef peer pinning in HelperAuthorization (stub allows all callers).
+- File-descriptor and staged-copy SourceAccess variants (SourceAccess enum shape is final;
+  only .absolutePath executes today).

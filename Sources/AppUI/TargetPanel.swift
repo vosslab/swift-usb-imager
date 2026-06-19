@@ -14,6 +14,13 @@ struct TargetPanel: View {
 
     @Bindable var vm: AppViewModel
 
+    /// Offscreen documentation render flag. When true, the interactive checksum
+    /// controls (Button/TextField) are replaced with a plain static label because
+    /// AppKit controls rasterize as a filled yellow "disabled" bar with a red
+    /// no-entry glyph through `ImageRenderer` (see `checksumSection`). The
+    /// interactive app (flag false) is unchanged.
+    @Environment(\.documentationRender) private var documentationRender
+
     /// Controls the SHA512SUMS file importer sheet.
     @State private var isChecksumFileImporterPresented = false
 
@@ -41,15 +48,24 @@ struct TargetPanel: View {
             HStack {
                 PanelHeader(step: 2, title: "Target", active: isCurrent, accent: PanelAccent.target)
                 Spacer()
-                Button {
-                    Task { await vm.refreshTargets() }
-                } label: {
+                // Documentation render: the live Button rasterizes through
+                // ImageRenderer as a filled yellow disabled glyph, so show the
+                // plain refresh icon instead. Interactive app keeps the Button.
+                if documentationRender {
                     Image(systemName: "arrow.clockwise")
                         .imageScale(.medium)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button {
+                        Task { await vm.refreshTargets() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .imageScale(.medium)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!isEnabled)
+                    .help("Refresh disk list")
                 }
-                .buttonStyle(.borderless)
-                .disabled(!isEnabled)
-                .help("Refresh disk list")
             }
 
             Divider()
@@ -75,9 +91,9 @@ struct TargetPanel: View {
     private var emptyTargetView: some View {
         // Loud icon only while Target is the current step (step 2).
         let isCurrent = vm.flashState.currentStep == 2
-        return VStack(spacing: 6) {
+        return VStack(spacing: 12) {
             Image(systemName: "externaldrive.badge.exclamationmark")
-                .font(.system(size: 28))
+                .font(.system(size: 64))
                 // Muted accent when Target is no longer the current step.
                 .foregroundStyle(isCurrent ? PanelAccent.target : PanelAccent.target.opacity(0.6))
             Text("No removable disks found")
@@ -107,7 +123,27 @@ struct TargetPanel: View {
         .frame(maxHeight: 180)
     }
 
+    @ViewBuilder
     private var checksumSection: some View {
+        // Documentation render: the interactive Button/TextField below rasterize
+        // through ImageRenderer as a filled yellow "disabled" bar with a red
+        // no-entry glyph. Substitute a plain static label so the doc screenshot
+        // reads cleanly. The interactive app (flag false) keeps the live controls.
+        if documentationRender {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .imageScale(.small)
+                Text("Optional checksum")
+                    .font(.caption.bold())
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+        } else {
+            interactiveChecksumSection
+        }
+    }
+
+    private var interactiveChecksumSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Expand/collapse toggle
             Button {

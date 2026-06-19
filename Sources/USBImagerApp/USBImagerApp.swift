@@ -1,25 +1,39 @@
 /// USBImagerApp.swift - SwiftUI @main entry point for the macOS USB imager.
 ///
+/// This is the GUI-only product. It parses no operational command-line flags.
+/// For terminal/automation use, run the `usbimager` CLI instead (list, verify,
+/// flash, open); the CLI is the supported headless entry point.
+///
 /// Constructs a single `AppViewModel` wired to the production XPC helper and
-/// presents `RootView` inside a single resizable window.
+/// presents `RootView` inside a single resizable window. Launched with no
+/// input it shows a normal window on step 1.
 ///
-/// Launch flags are parsed via Apple's swift-argument-parser (see LaunchOptions
-/// below). The app is GUI-first: with no flags it launches the window normally.
-/// The flags below are debug/testing conveniences (preselect a source for
-/// screenshots, auto-exit for unattended runs); a GUI app never requires CLI
-/// input to function.
+/// Source handoff (no argv parsing):
+///   The app receives a preselected source through a custom URL scheme handled
+///   by SwiftUI `.onOpenURL` (the URL-scheme handoff). The CLI's
+///   `usbimager open --source PATH [--auto-exit N]` issues:
 ///
-/// Supported launch flags:
-///   --source=PATH      Pre-select PATH as the source image on launch.
-///                      If PATH does not exist the flag is ignored and the app
-///                      stays on step 1. Use the equals form: a trailing
-///                      space-separated path argument (--source PATH) is
-///                      intercepted by AppKit's open-files handling and
-///                      suppresses the WindowGroup window.
-///   --auto-exit=N      Quit the app after N seconds. Requires a value
-///                      (--auto-exit=N or --auto-exit N); absent = no auto-exit.
-///   -h / --help        Print usage and exit without launching the GUI
-///                      (supplied automatically by ArgumentParser).
+///       usbimager://open?source=<percent-encoded file URL>&autoExitAfter=N
+///
+///   The handler decodes the percent-encoded file URL with `URLComponents`,
+///   accepts only a readable `file:`-backed source (a non-file or missing/
+///   unreadable source keeps the app on step 1 and logs), and calls
+///   `AppViewModel.selectSource`. An optional positive `autoExitAfter` rides in
+///   the same payload and schedules a clean self-termination via the normal app
+///   lifecycle (`NSApplication.terminate`) - a handoff-delivered automation
+///   instruction, not raw argv parsing and not an external kill.
+///
+///   The auto-exit timer starts only when BOTH the source is preselected and
+///   the window is visible (`RootView.onAppear`), whichever happens last: the
+///   URL can arrive after the window is already on screen, so a single
+///   idempotent `startAutoExitIfReady()` is called from both paths and schedules
+///   at most once. Absent `autoExitAfter` schedules no timer and the window
+///   stays open until the user quits.
+///
+///   Bundle registration: the `usbimager` scheme reaches the app only through a
+///   packaged `USBImagerApp.app` bundle whose Info.plist declares
+///   `CFBundleURLTypes`. See `Info.plist` in this directory and the bundle
+///   assembly step in `build_debug.sh`.
 ///
 /// TODO (signing phase):
 ///   - Replace `helperMachServiceName` with the final SMAppService daemon name
@@ -33,8 +47,8 @@
 
 import AppKit
 import AppUI
-import ArgumentParser
 import FlashEngine
+import Foundation
 import HelperProtocol
 import SwiftUI
 
@@ -48,70 +62,120 @@ private let helperMachServiceName = "com.nsh.usbimager.helper"
 /// Replace with the real Apple-signed requirement during the signing phase.
 private let helperRequirementString = #"identifier "com.nsh.usbimager.helper" and anchor apple generic"#
 
-// MARK: - Argument parsing
+// MARK: - Handoff request decoding
 
-/// Structured launch options parsed by swift-argument-parser.
+/// Result of decoding a `usbimager://open?...` handoff URL.
 ///
-/// Both options are optional and exist only as debug/testing conveniences: the
-/// app is GUI-first, so launching with no arguments opens the window normally.
-/// ArgumentParser supplies --help and clean error messages automatically via
-/// parseOrExit().
-///
-/// Note: use the equals form for --source (--source=PATH). swift-argument-parser
-/// consumes the equals form as a single token before AppKit sees it. A trailing
-/// space-separated path argument (--source PATH) is instead intercepted by
-/// AppKit's open-files handling and suppresses the WindowGroup window.
-///
-/// Note: --auto-exit requires a value (--auto-exit=N or --auto-exit N); a bare
-/// --auto-exit is no longer accepted. Absent flag means no auto-exit.
-struct LaunchOptions: ParsableArguments {
-
-    /// Pre-select a source image at launch; nil when the flag is absent.
-    @Option(
-        name: [.customLong("source")],
-        help: "Pre-select a source image (.iso/.img) at launch; opens on step 2. Use --source=PATH (equals form)."
-    )
-    var source: String?
-
-    /// Seconds until auto-exit; nil when the flag is absent.
-    @Option(
-        name: [.customLong("auto-exit")],
-        help: "Quit automatically after this many seconds (useful for testing/screenshots)."
-    )
-    var autoExit: Double?
+/// `sourcePath` is non-nil only when the URL carries a readable `file:`-backed
+/// source; otherwise the app stays on step 1. `autoExitAfterSeconds` is non-nil
+/// only when the payload carries a positive numeric `autoExitAfter`.
+private struct HandoffRequest {
+    let sourcePath: String?
+    let autoExitAfterSeconds: Double?
 }
 
-// MARK: - AppEntry
-
-/// @main entry point that handles --help and then hands off to SwiftUI.
+/// Decode and validate a handoff URL.
 ///
-/// Argument parsing happens here, before the GUI is constructed, so that
-/// `--help` and `--source` work even in non-interactive (headless) contexts.
-@main
-enum AppEntry {
-    static func main() {
-        // parseOrExit() handles --help and argument errors, printing usage and
-        // exiting with the appropriate status before the GUI is constructed.
-        let opts = LaunchOptions.parseOrExit()
+/// Only the `usbimager` scheme is handled. `source` is carried as a
+/// percent-encoded `file:` URL string; `URLComponents` already percent-decodes
+/// query values, so the decoded value is the file URL. The source is accepted
+/// only when it is a `file:` URL that points at a readable file. `autoExitAfter`
+/// must parse as a positive `Double` or it is ignored. Every rejection logs a
+/// clear line and leaves the corresponding field nil so the window stays usable.
+private func decodeHandoff(_ url: URL) -> HandoffRequest {
+    // Scheme guard: only our scheme is handled.
+    guard url.scheme == "usbimager" else {
+        print("[USBImagerApp] handoff: ignoring non-usbimager scheme: \(url.scheme ?? "nil")")
+        return HandoffRequest(sourcePath: nil, autoExitAfterSeconds: nil)
+    }
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          let items = components.queryItems else {
+        print("[USBImagerApp] handoff: no query items in \(url)")
+        return HandoffRequest(sourcePath: nil, autoExitAfterSeconds: nil)
+    }
 
-        // Forward the parsed struct to USBImagerApp so the SwiftUI .task
-        // closures can read from it without their own arg parsing.
-        USBImagerApp.launchOptions = opts
+    // source: a percent-encoded file URL; accept only a readable file: URL.
+    var resolvedPath: String? = nil
+    if let sourceValue = items.first(where: { $0.name == "source" })?.value {
+        if let fileURL = URL(string: sourceValue), fileURL.isFileURL {
+            let path = fileURL.path
+            if FileManager.default.isReadableFile(atPath: path) {
+                resolvedPath = path
+            } else {
+                print("[USBImagerApp] handoff: source missing/unreadable: \(path); staying on step 1")
+            }
+        } else {
+            print("[USBImagerApp] handoff: source is not a file URL: \(sourceValue); staying on step 1")
+        }
+    }
 
-        USBImagerApp.main()
+    // autoExitAfter: ignored unless it parses as a positive number.
+    var autoExit: Double? = nil
+    if let raw = items.first(where: { $0.name == "autoExitAfter" })?.value {
+        if let secs = Double(raw), secs > 0 {
+            autoExit = secs
+        } else {
+            print("[USBImagerApp] handoff: ignoring non-positive autoExitAfter: \(raw)")
+        }
+    }
+    return HandoffRequest(sourcePath: resolvedPath, autoExitAfterSeconds: autoExit)
+}
+
+// MARK: - Auto-exit coordinator
+
+/// Owns the auto-exit gating for the GUI.
+///
+/// The auto-exit timer must start only when BOTH the source is preselected and
+/// the window is visible, whichever completes last. The handoff URL can arrive
+/// before or after `RootView.onAppear`, so both code paths feed this coordinator
+/// and call the idempotent `startAutoExitIfReady()`; it schedules at most once.
+/// This state lives here (not on `AppViewModel`) so the GUI's presentation
+/// surface is unchanged.
+@MainActor
+private final class AutoExitCoordinator {
+    private var sourcePreselected = false
+    private var windowVisible = false
+    private var pendingAutoExitSeconds: Double?
+    private var scheduled = false
+
+    /// Record that the window is on screen (called from `RootView.onAppear`).
+    func markWindowVisible() {
+        windowVisible = true
+        startAutoExitIfReady()
+    }
+
+    /// Record that the source has been preselected (`selectSource` completed).
+    func markSourcePreselected() {
+        sourcePreselected = true
+        startAutoExitIfReady()
+    }
+
+    /// Record the requested auto-exit interval from the handoff payload.
+    /// A nil value (absent or non-positive) schedules no timer.
+    func setAutoExit(seconds: Double?) {
+        pendingAutoExitSeconds = seconds
+        startAutoExitIfReady()
+    }
+
+    /// Schedule the clean-quit timer once, only when source + visibility hold.
+    /// Idempotent: safe to call from every triggering path.
+    func startAutoExitIfReady() {
+        guard !scheduled else { return }
+        guard let seconds = pendingAutoExitSeconds else { return }
+        guard sourcePreselected, windowVisible else { return }
+        scheduled = true
+        print("[USBImagerApp] auto-exit: scheduling clean quit in \(seconds)s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            print("[USBImagerApp] auto-exit: terminating now (clean quit)")
+            NSApplication.shared.terminate(nil)
+        }
     }
 }
 
 // MARK: - App
 
+@main
 struct USBImagerApp: App {
-
-    // MARK: Statics set by AppEntry before SwiftUI launches
-
-    /// Parsed launch options set once in AppEntry.main() before the GUI starts.
-    /// Both fields are optional, so the default init yields nil/nil (GUI-first launch).
-    /// Written once at startup; read-only afterward, so nonisolated(unsafe) is sound.
-    nonisolated(unsafe) static var launchOptions = LaunchOptions()
 
     // MARK: State
 
@@ -132,27 +196,38 @@ struct USBImagerApp: App {
         return AppViewModel(helperConnection: connection)
     }()
 
+    /// Auto-exit gating state, fed by both the window-visible trigger and the
+    /// handoff handler so the timer starts only when both conditions hold.
+    @State private var autoExit = AutoExitCoordinator()
+
     // MARK: Scene
 
     var body: some Scene {
         WindowGroup {
             RootView(vm: viewModel)
-                // --source preselect: guard existence, log result, then preselect.
-                .task {
-                    guard let path = USBImagerApp.launchOptions.source else { return }
-                    guard FileManager.default.fileExists(atPath: path) else {
-                        print("[USBImagerApp] --source: file not found: \(path); staying on step 1")
-                        return
-                    }
-                    print("[USBImagerApp] --source: preselecting \(path)")
-                    await viewModel.selectSource(URL(fileURLWithPath: path))
-                    print("[USBImagerApp] --source: source bytes \(viewModel.sourceImageBytes); now on step \(viewModel.flashState.currentStep)")
+                // Window-visible trigger: RootView.onAppear proves the window is
+                // on screen. Attached here, on the RootView instance, so the
+                // AppUI module's RootView stays unchanged.
+                .onAppear {
+                    print("[USBImagerApp] window: visible (RootView.onAppear)")
+                    autoExit.markWindowVisible()
                 }
-                // --auto-exit: quit after the specified delay.
-                .task {
-                    guard let secs = USBImagerApp.launchOptions.autoExit else { return }
-                    try? await Task.sleep(nanoseconds: UInt64(secs * 1_000_000_000))
-                    NSApplication.shared.terminate(nil)
+                // Source handoff (URL scheme). Decodes, validates,
+                // preselects the source, and records any auto-exit request.
+                .onOpenURL { url in
+                    print("[USBImagerApp] handoff: received URL \(url)")
+                    let request = decodeHandoff(url)
+                    // The auto-exit request is recorded first; the timer only
+                    // starts once the source is preselected and the window is
+                    // visible (see AutoExitCoordinator).
+                    autoExit.setAutoExit(seconds: request.autoExitAfterSeconds)
+                    guard let path = request.sourcePath else { return }
+                    Task {
+                        await viewModel.selectSource(URL(fileURLWithPath: path))
+                        // Preselect completed; the auto-exit timer can now start.
+                        print("[USBImagerApp] handoff: preselected \(path), step 2")
+                        autoExit.markSourcePreselected()
+                    }
                 }
         }
         .windowResizability(.contentMinSize)

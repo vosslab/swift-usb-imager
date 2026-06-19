@@ -1,7 +1,361 @@
+## 2026-06-18
+
+### Additions and New Features
+
+- Refreshed `docs/CODE_ARCHITECTURE.md`: added USBImagerCore, USBImagerCLI, and USBImagerShots to
+  the module table; updated the USBImagerApp row to `@main struct USBImagerApp: App`,
+  `.onOpenURL` URL-scheme handoff (`usbimager://`), `AutoExitCoordinator`, and Info.plist
+  CFBundleURLTypes; added missing dependency-graph edges (USBImagerCLI -> USBImagerCore,
+  USBImagerShots -> AppUI + USBImagerCore, AppUI -> USBImagerCore); corrected the "not yet wired"
+  bullet -- Mach service name and code-signing requirement are now wired in
+  `Sources/USBImagerCore/XPCFlashEngineFactory.swift` (Mach service `com.nsh.usbimager.helper`
+  + designated requirement); added CLI exit-code contract table. Created `docs/FILE_STRUCTURE.md`
+  with full top-level layout, Sources/Tests/docs subtree guides, generated-artifacts table, and
+  where-to-add-new-work table. Added `docs/FILE_STRUCTURE.md` link to `README.md`.
+- Added `VerifyCommandTests.swift` (WP-3c): 13 new Swift Testing tests covering `usbimager verify`
+  delegation and exit-code mapping. Factored a `VerifyCommand.performVerify` static helper (mirrors
+  `FlashCommand.performFlash`) that returns a typed `VerifyOutcome` without calling
+  `Foundation.exit`, then updated `run()` to route the outcome to `Usbimager.fail`/`exit`. Tests
+  assert delegation to `ChecksumService` protocol requirements (`sha512(ofFileAt:)`,
+  `validatePastedHex`, `expectedDigest(fromSums:matching:)`, `matches`), outcome cases
+  (`.digestOnly`, `.match`, `.failure(.verificationMismatch)` exit 1), and bad-input paths
+  (unreadable image, malformed `--sha512` hex, unreadable/unparsable `--sums`) all exit 2
+  via `.failure(.badInput)`. `swift test` -> 325 tests in 79 suites passed (was 312).
+
+- Implemented `usbimager list` subcommand (WP-3b): `Sources/USBImagerCLI/Subcommands/ListCommand.swift`
+  replaced the stub with the real body. Calls `diskService.snapshotDisks()` then
+  `diskService.validTargets(from:imageSizeBytes:0 sourceBackingBSDName:nil)` to get safe
+  targets (no disk-safety logic in the CLI; all filtering in DiskModel via core). Prints one
+  `displayName(for:)` row per safe target; prints "No removable target disks found." and exits 0
+  when the list is empty; exits 2 via `Usbimager.fail(.badInput(...))` when `diskTarget` is nil
+  (no DiskArbitration session). Added `Tests/USBImagerCLITests/ListCommandTests.swift` with 4
+  new delegation tests ("snapshotDisks() and validTargets() are both called", "validTargets is
+  called with imageSizeBytes: 0 and nil sourceBackingBSDName", "displayName(for:) is called once
+  per safe target disk", "Empty safe-target list exits cleanly"). `usbimager list` output on this
+  machine: "No removable target disks found." `swift test --filter USBImagerCLITests` -> 49 tests
+  in 15 suites passed.
+
+### Behavior or Interface Changes
+
+- Fixed low-contrast "Choose Image" button in the offscreen documentation
+  screenshots: in `documentationRender` mode the card surface promotes labels to
+  near-white, but the `.bordered` button kept a light translucent lavender fill,
+  leaving the label light-on-light. Added a `documentationRender`-gated
+  `DocButtonFillModifier` (Sources/AppUI/StyleHelpers.swift) that paints a dark
+  charcoal pill behind the label, applied only in `Sources/AppUI/SourcePanel.swift`'s
+  doc-render branch. The interactive app (flag false) is unchanged. Regenerated
+  `screenshots/main_window.png` (486 KB) and `screenshots/step2_target.png`
+  (449 KB) via `swift run USBImagerShots` (activation policy `.prohibited` --
+  nothing on screen, no focus); the label now reads clearly on the dark pill in
+  both Source-active and Source-inactive states. `swift test` -> 325 tests in 79
+  suites passed.
+
+- Refreshed `docs/USAGE.md`: removed stale GUI launch-flags section (`--source`/`--auto-exit`/`-h`),
+  rewrote `capture_screenshot.sh` description to reflect `swift run USBImagerShots` offscreen render,
+  updated unit-test count to 325, added "Command-line interface (usbimager)" section documenting the
+  four subcommands (`list`, `verify`, `flash`, `open`) with usage examples and exit-code table
+  (0-6), and updated Targets table with `USBImagerCore`, `USBImagerCLI`, and `USBImagerShots`.
+  `docs/INSTALL.md` version section (26.06.0 CalVer, VERSION synced) confirmed current; no edits needed.
+
+### Fixes and Maintenance
+
+- Tightened `AGENTS.md`: converted prose style pointers to bare-path bullet list; added
+  `## Project docs` section pointing to `docs/CODE_ARCHITECTURE.md`, `docs/FILE_STRUCTURE.md`,
+  and `docs/USAGE.md` (all added or refreshed in the CLI/core split). No content moved or
+  deleted; file remains 15 non-blank lines.
+
+- Refreshed `README.md`: updated first paragraph to lead with SwiftUI GUI as the primary product
+  and mention the thin `usbimager` terminal CLI; fixed stale test count (203 -> 325); added CLI
+  subcommand pointer in the quick start note; confirmed all doc links (USAGE, INSTALL,
+  CODE_ARCHITECTURE, FILE_STRUCTURE, SIGNING, CHANGELOG) present and correct.
+
+- Verified the documentation-render screenshot style is DARK cards with LIGHT text (per explicit
+  user direction reversing an earlier light-card attempt): confirmed `Sources/AppUI/StyleHelpers.swift`
+  keeps the opaque charcoal `cardDepthFill`, promotes the foreground hierarchy via three-argument
+  `foregroundStyle(.white, white@0.82, white@0.62)`, forces `.colorScheme(.dark)`, and that no
+  light-card fill or `.colorScheme(.light)` remains in any `documentationRender` branch; the
+  interactive `glassEffect` path (flag false) is unchanged. Regenerated `screenshots/main_window.png`
+  (475 KB) and `screenshots/step2_target.png` (442 KB) via `swift run USBImagerShots` with activation
+  policy `.prohibited` (nothing on screen, no focus taken); the "Source/Target/Flash/Verify" headers,
+  the "No image selected"/"No removable disks found"/"Optional checksum"/"Select a target first"/
+  "Waiting for flash"/"Choose Image" labels, and the "debian.iso / 4.3 GB" source line render as
+  clearly legible light text on the dark cards, with Source idle-purple and Target loud-blue at step 2
+  preserved. `swift test` -> 325 tests in 79 suites passed.
+
+- Stripped planning-scaffolding tags (WP-*, WS-*, standalone M0-M4 milestone references) from
+  committed comments across 13 files under `Sources/` and `Sources/README.md`; rephrased each
+  comment to describe code behavior. Removed two brittle collection-size `#expect` assertions
+  (`FlashProgressData.Phase.allCases.count == 2` in `SeamSmokeTests.swift` and
+  `registered.count == 4` in `CLIScaffoldTests.swift`); the `contains` checks above each
+  already pin every required element. `swift build` clean; `swift test` -> 325 tests in 79
+  suites passed (count unchanged -- removing a count-check line does not remove a test).
+- Fixed two additional stale comments: removed false "not yet implemented / stub" claim from
+  `Sources/USBImagerCLI/Usbimager.swift` (subcommands are all implemented); added missing
+  body comment "Forward to the DiskModel module-level free function." to the file-scope
+  `diskModelValidTargets` wrapper in `Sources/AppUI/AppViewModel.swift` to match its
+  sibling wrappers in `DiskTargetService.swift`. Comment-only; `swift test` -> 325 passed.
+
+### Removals and Deprecations
+
+- Removed `.product(name: "ArgumentParser", package: "swift-argument-parser")` from the
+  `USBImagerApp` target in `Package.swift`; the GUI app never imported ArgumentParser (confirmed
+  by source audit), so the dependency was dead. `USBImagerCLI` retains its ArgumentParser dep.
+  `swift build` -> Build complete; `swift test` -> 325 tests in 79 suites passed (unchanged).
+
 ## 2026-06-17
 
 ### Additions and New Features
 
+- Added a no-glass documentation render path (WP-4b+) so offscreen screenshots show readable panel
+  text and icons: introduced the public `EnvironmentValues.documentationRender` flag (default false)
+  in `Sources/AppUI/StyleHelpers.swift`; when true the `panelCard` modifier draws a solid opaque
+  charcoal card (same step tint, rim, and active/inactive highlighting) instead of `.glassEffect`,
+  and `RootView` drops the `GlassEffectContainer`. `Sources/USBImagerShots/USBImagerShots.swift`
+  sets the flag on the rendered `RootView` because Liquid Glass does not rasterize through
+  `ImageRenderer` without a live window's backing. The interactive app default (flag false) keeps its
+  unchanged Liquid Glass appearance. Regenerated `screenshots/main_window.png` (2.3 MB) and
+  `screenshots/step2_target.png` (2.2 MB), which now show panel headers, SF Symbol icons, and text
+  labels with the same idle vs step-2 highlighting; activation policy stays `.prohibited` (nothing
+  appears on screen). `swift test` -> 312 tests in 76 suites passed.
+- Added the `USBImagerShots` offscreen screenshot render harness (WP-4b):
+  `Sources/USBImagerShots/USBImagerShots.swift` builds an `AppViewModel` with injected fake core
+  services (a fixed-byte `ImageSourceService`, a fixture USB-disk `DiskTargetService` forwarding to
+  the real `DiskModel` safety filter, and a no-op `FlashOrchestrationService`), then renders `RootView`
+  to PNG offscreen via `ImageRenderer` and exits -- it sets `NSApplication.activationPolicy(.prohibited)`
+  so no window is ordered front and focus is never taken (verified: running it shows nothing on screen).
+  It writes `screenshots/main_window.png` (idle, step 1) and `screenshots/step2_target.png` (preselected
+  source advancing to step 2 through the same `selectSource` core seam). A step-2 guard asserts
+  `flashState.currentStep == 2` with populated `availableTargets`/`sourceImageBytes` before writing the
+  step-2 PNG and exits non-zero otherwise (negative path verified: forced source failure leaves step 1
+  and exits 1, refusing to write a blank PNG). `capture_screenshot.sh` now runs `swift run USBImagerShots`
+  instead of launching the live foreground GUI twice and `pkill`-ing it (rejected as disruptive in
+  `docs/active_plans/decisions/wp0_gui_source_handoff_probe.md`); `usbimager open --auto-exit N` is kept
+  only as an opt-in human smoke test. Added the `USBImagerShots` executable target/product to
+  `Package.swift` (depends on `AppUI`, `USBImagerCore`, `DiskModel`). `swift build` -> `Build complete!`;
+  `swift run USBImagerShots` exits 0 and produces both non-empty PNGs (~2.3 MB and ~2.2 MB). Known
+  `ImageRenderer` limitation: the four panel cards, step highlighting, and mesh backdrop rasterize, but
+  the Liquid Glass panel text/content does not render offscreen.
+- Set CalVer version 26.06.0 (WP-4c): created repo-root `VERSION` file containing `26.06.0`;
+  updated `Sources/USBImagerApp/Info.plist` CFBundleShortVersionString and CFBundleVersion from
+  `0.0.0` to `26.06.0`; updated `Sources/USBImagerCLI/Usbimager.swift` CommandConfiguration
+  `version:` from `"0.0.0"` to `"26.06.0"`; added a version note to `docs/INSTALL.md`; added
+  `Version 26.06.0` line to `README.md` Status section. `usbimager --version` prints `26.06.0`.
+  All edited files are ASCII-clean.
+
+- Implemented `usbimager flash --source <iso> --target <bsd> [--verify]` (WP-3d):
+  replaced the scaffold stub in `Sources/USBImagerCLI/Subcommands/FlashCommand.swift`
+  with the real headless flash path. It resolves the target via the core disk
+  service (`diskDescriptor(withBSDName:)`; unknown -> exit 2), validates the source
+  via `ImageSourceService.byteLength` (exit 2), then calls
+  `FlashOrchestrationService.flash(advisorySHA512: nil, verifyReadBack: --verify)`,
+  printing one concise progress line per sample, and maps `FlashRunResult` to a
+  contract exit code via the shared exit path (success 0, verificationMismatch 1,
+  helperUnavailable 3, flashFailed 4, cancelled 5). The resolve/validate/orchestrate
+  logic is factored into a static `performFlash` that returns the typed result
+  without calling `Foundation.exit`, so delegation tests drive the full path against
+  fakes. Wired the real engine factory inside core
+  (`Sources/USBImagerCore/XPCFlashEngineFactory.swift`): it builds a `FlashEngine`
+  over `XPCHelperConnection` using the shared helper Mach service name
+  `com.nsh.usbimager.helper` and designated requirement, constructs
+  `CodeSigningRequirement` internally, and throws `CoreError.helperUnavailable` when
+  the connection cannot be established; `CoreServices.live()` now defaults to this
+  factory (replacing `HelperUnavailableEngineFactory`) so the CLI selects the real
+  flash path without importing `FlashEngine`. Added
+  `Tests/USBImagerCLITests/FlashCommandTests.swift` (14 tests in 4 suites): flash
+  delegation with the resolved descriptor and `verifyReadBack` reflecting `--verify`,
+  each `FlashRunResult` case mapping to its exit code, bad-target/unreadable-source/no-session
+  exit-2 paths that never call flash, and progress-line formatting. `swift test`
+  passes (312 tests in 76 suites); `usbimager flash --source <fixture> --target bogusdisk999`
+  exits 2 with a clear message (no crash/hang). A real device flash needs the helper
+  installed plus a scratch USB and is the documented manual run
+  `usbimager flash --source <iso> --target <bsd> [--verify]`.
+
+- Implemented `usbimager open --source <path> [--auto-exit N]` (WP-3e): replaced the
+  scaffold stub in `Sources/USBImagerCLI/Subcommands/OpenCommand.swift` with the real
+  M0 handoff. The command validates the source via `ImageSourceService.byteLength` (exit
+  2 on failure), builds the percent-encoded `usbimager://open?source=<file-url>&autoExitAfter=N`
+  URL using the unreserved-characters encoding that matches the M0 contract, locates
+  `USBImagerApp.app` relative to the CLI executable (exit 6 if absent), then delivers the
+  URL via `/usr/bin/open` as a child `Process` (no AppKit/NSWorkspace, keeping the CLI
+  target dependency-clean) and exits 0. The URL-construction and app-location logic are
+  factored into static, testable functions on `OpenCommand`. Added
+  `Tests/USBImagerCLITests/OpenCommandTests.swift` (22 new tests in 4 suites): exact M0
+  encoding assertions, round-trip decode, auto-exit variants, space-in-path handling, source
+  validation via fake/real `ImageSourceService`, and bundle-location positive/negative paths.
+  `swift test` passes (298 tests in 72 suites).
+
+- Added two core seam methods (WP-1e) so the CLI `verify` and `flash` paths stay behind
+  `USBImagerCore`: `ChecksumService.sha512(ofFileAt:)` streams a source image file through the
+  incremental `SHA512Hasher` in 1 MiB chunks (no whole-image load; digest matches the one-shot
+  `Verifier.sha512(of:)`) and throws `CoreError.badInput` on a missing/unreadable file, and
+  `DiskTargetService.diskDescriptor(withBSDName:)` snapshots disks and returns the first descriptor
+  whose `bsdName` matches (else `nil`). Both are protocol-extension defaults in
+  `Sources/USBImagerCore/Services.swift` (shared by every conformer, so the GUI/CLI stubs need no
+  edits), with a pure file-scope `firstDescriptor(withBSDName:in:)` matching helper in
+  `Sources/USBImagerCore/DiskTargetService.swift`. Added `USBImagerCoreTests` coverage: streaming
+  vs one-shot hash equivalence (empty, small, multi-chunk files), a missing-file `badInput` case,
+  and BSD-name lookup hits/misses over a controlled descriptor list (no live DiskArbitration).
+  `swift test --filter USBImagerCoreTests` -> 60 tests in 14 suites passed.
+- Added the `usbimager` terminal executable scaffold (WP-3a): `Sources/USBImagerCLI/Usbimager.swift`
+  (a `@main ParsableCommand` root registering the `list`/`verify`/`flash`/`open` subcommands, the
+  injectable `CoreServices` seam with a `Usbimager.servicesOverride` test hook and `services()`
+  resolver, and the shared exit path mapping a `CoreError`/`CoreExitCode` to the process status per
+  the CLI contract), four thin subcommand stubs under `Sources/USBImagerCLI/Subcommands/` that reach
+  core through the seam and print "not yet implemented" (bodies owned by WP-3b/3c/3d/3e), and
+  `Sources/USBImagerCore/HelperUnavailableEngineFactory.swift` (a placeholder `FlashEngineFactory`
+  that reports the helper unavailable so the flash path returns exit code 3 instead of crashing until
+  WP-3d wires the real XPC factory). Added the `USBImagerCLI` executable target plus the `usbimager`
+  product to `Package.swift` (deps: `USBImagerCore` + `ArgumentParser` only; the GUI and workflow
+  libraries stay reachable only via `USBImagerCore`), and a `USBImagerCLITests` target. `swift build`
+  is clean; `usbimager --help` lists all four subcommands; `swift test` passes (276 tests, 65 suites).
+- Rewrote `Sources/USBImagerApp/USBImagerApp.swift` as the GUI-only entry point and added the
+  M0 source handoff (WP-2b). Removed `import ArgumentParser`, the `LaunchOptions`
+  `ParsableArguments` struct, the `AppEntry` wrapper, the `launchOptions` static, and the
+  `--source`/`--auto-exit` `.task` argument hooks. The app now receives a preselected source
+  only through the custom URL scheme `usbimager://open?source=<percent-encoded file
+  URL>&autoExitAfter=N` handled by SwiftUI `.onOpenURL` on the scene: `decodeHandoff(_:)`
+  parses with `URLComponents`, accepts only a readable `file:`-backed source
+  (`isFileURL` + `FileManager.isReadableFile(atPath:)`) and otherwise stays on step 1 with a
+  clear log line, and reads an optional positive `autoExitAfter`. On a valid source it calls
+  `AppViewModel.selectSource` and emits the M0 preselect line
+  `[USBImagerApp] handoff: preselected <path>, step 2`. A new private `@MainActor`
+  `AutoExitCoordinator` gates the auto-exit timer on the M0 correction: a single idempotent
+  `startAutoExitIfReady()` is fed by both the window-visible trigger
+  (`RootView.onAppear`, which logs `[USBImagerApp] window: visible (RootView.onAppear)`) and
+  the handoff handler, so the timer starts only when source-preselected AND window-visible
+  both hold, whichever is last, and fires `NSApplication.terminate` for a clean lifecycle
+  quit; absent/non-positive `autoExitAfter` schedules no timer and the window stays open. The
+  `.onAppear` is attached to the `RootView` instance from the app scene so the AppUI module's
+  `RootView` stays unchanged (WP-2a ownership). Added `Sources/USBImagerApp/Info.plist`
+  carrying `CFBundleURLTypes` (`CFBundleURLName com.nsh.usbimager.url`, scheme `usbimager`)
+  plus the standard app keys (`CFBundleExecutable`, `CFBundleIdentifier com.nsh.usbimager`,
+  `CFBundlePackageType APPL`, `NSPrincipalClass NSApplication`, `LSMinimumSystemVersion 26.0`,
+  `CFBundleShortVersionString`/`CFBundleVersion` placeholders for WP-4c, `CFBundleName`);
+  excluded it from the SwiftPM `USBImagerApp` target (`exclude: ["Info.plist"]`) since it is
+  a bundle input, not a build resource. Updated `build_debug.sh` to assemble a real
+  `USBImagerApp.app` bundle (`Contents/MacOS/USBImagerApp` + `Contents/Info.plist`) at a
+  stable repo path so LaunchServices can route the scheme to the dev artifact (the bare
+  executable carries no `CFBundleURLTypes`); the bundle is git-ignored. The bundle assembly
+  is a build step only -- this work does no GUI launch (validation stays headless per the M0
+  finding). Verified: `./build_debug.sh` -> `Build complete!` with the bundle assembled;
+  `swift test` -> `Test run with 276 tests in 65 suites passed`.
+
+- Added `Sources/USBImagerCore/FlashOrchestrationService.swift` (WP-1d):
+  `DefaultFlashOrchestrationService`, an `actor` conforming to the frozen
+  `FlashOrchestrationService` protocol. It obtains a `FlashEngine` from the injected
+  `FlashEngineFactory` (a throwing factory is the no-helper path: `makeEngine()` throwing
+  `CoreError.helperUnavailable` is returned directly as `.failure(.helperUnavailable)`, CLI
+  exit code 3, before any device work), drains the engine's `progressStream` on a child task,
+  maps each helper `FlashProgress` into `FlashProgressData` while dropping the lifecycle
+  phases (`.unmounting`/`.done`) and forwarding only `.writing`/`.verifying`, forwards
+  `cancel()` to the active engine, and collapses the engine's `async throws` result into a
+  typed `FlashRunResult`. On engine `.success` it returns `.success(deviceSHA512:)` with the
+  helper-derived (lowercased) device digest, except that when `verifyReadBack` is set and an
+  advisory digest is present a case-insensitive read-back mismatch yields
+  `.failure(.verificationMismatch)` (exit code 1). `FlashEngineError.cancelled` maps to
+  `CoreError.cancelled` (exit code 5); every other engine error maps to
+  `CoreError.flashFailed` (exit code 4) with wording from `userMessage(for:)`. Completed the
+  body of `userMessage(for: FlashEngineError)` in `CoreError.swift` (the WP-1a seam, signature
+  unchanged) with full per-case wording. The service is an `actor` so it satisfies `Sendable`
+  and isolates the per-session engine reference without forcing `@MainActor`; no SwiftUI/AppKit.
+  Added `Tests/USBImagerCoreTests/FlashOrchestrationServiceTests.swift` (11 tests) driving a
+  fake `FlashEngineFactory` and a scripted fake `HelperConnection` (no real device): helper-
+  absent path yields `.failure(.helperUnavailable)` with exit code 3, success carries the
+  device digest, progress phase filtering keeps only writing/verifying, read-back mismatch and
+  case-insensitive match, helper-reported failure and connection-failed map to `.flashFailed`,
+  engine-cancelled maps to `.cancelled`, `userMessage` covers every `FlashEngineError` case
+  with non-empty wording, and `cancel()` is a safe no-op with no active session. Test note:
+  `FlashEngine` forwards each progress callback onto its actor via a detached `Task` hop and
+  then finishes the progress stream synchronously when the helper's result callback resumes,
+  so a synchronous in-memory fake would race the stream finish ahead of those hops; the
+  scripted fake `HelperConnection` delivers its terminal result from a short-delayed task when
+  a progress script is present, matching production timing where helper IPC interleaves
+  naturally. The device digest is normalized to canonical lowercase hex once so the success
+  payload and the read-back comparison agree regardless of wire casing. Verified: `swift build`
+  -> `Build complete!`; `swift test --filter USBImagerCoreTests` -> `Test run with 53 tests in
+  12 suites passed` (all 11 WP-1d tests plus the pre-existing WP-1a/1b/1c suites).
+
+- Ran the WP-0 GUI source-handoff probe (M0) and recorded findings in
+  `docs/active_plans/decisions/wp0_gui_source_handoff_probe.md`. Selected the custom URL
+  scheme `usbimager://open?source=<percent-encoded file URL>&autoExitAfter=N` handled by
+  SwiftUI `onOpenURL` as the single GUI source-handoff mechanism (no fallback carrier
+  needed). A throwaway SwiftUI spike (`/tmp/handoff_spike/`) packaged into a `.app` bundle
+  with a `CFBundleURLTypes` Info.plist registration proved, end to end, that `open` of the
+  URL routes to the exact dev bundle, the WindowGroup window appears, the percent-encoded
+  `file:` source reaches a `selectSource`-equivalent, and the GUI self-terminates cleanly
+  when `autoExitAfter` is set. Key findings for later lanes: the mechanism requires a
+  packaged `.app` bundle (the bare `swift build` executable has no `CFBundleURLTypes`), and
+  LaunchServices refuses an unsigned bundle under `/tmp` (the dev bundle must live in a
+  non-transient path). Fixed the two observable signals downstream lanes consume: the
+  preselect line `[USBImagerApp] handoff: preselected <path>, step 2` (polled by WP-4b) and
+  the window-visible trigger `[USBImagerApp] window: visible (RootView.onAppear)` (gates the
+  WP-2b auto-exit timer, which must start only when source-preselected AND window-visible
+  both hold). Verification: `swift build` -> `Build complete!`; `open` the bundle then
+  `open "usbimager://open?source=...&autoExitAfter=5"` produced the ordered
+  handoff/preselect/auto-exit log lines and a clean process exit; negative paths (missing
+  source, `autoExitAfter=0`) logged and stayed on step 1.
+
+- Added `Sources/USBImagerCore/ImageSourceService.swift` and
+  `Sources/USBImagerCore/DiskTargetService.swift` (WP-1c): concrete implementations of the
+  `ImageSourceService` and `DiskTargetService` protocols from the frozen service seam. `DefaultImageSourceService`
+  wraps `FileManager.attributesOfItem` to stat a local image file by its `file:` URL and returns the
+  byte length; throws `CoreError.badInput` when the file is missing, is a directory, or is unreadable.
+  No hashing, no disk-safety logic. `DefaultDiskTargetService` wraps `DiskEnumerator.snapshot()` (async,
+  actor-isolated) for disk enumeration and delegates to the `DiskModel.validTargets(from:imageSizeBytes:
+  sourceBackingBSDName:)` free function for safety filtering with no re-implementation of safety rules.
+  Provides `displayName(for:)` formatting `"<bsdName>  (<busProtocol>, <size> GB)"` (decimal gigabytes,
+  one decimal place, matching macOS Disk Utility) as the stable GUI-neutral disk label. Key design note:
+  the `validTargets` free function name collides with the `DiskTargetService` protocol method inside the
+  conformance body; resolved via a file-scope wrapper (`safeDiskModelValidTargets`) that names the DiskModel
+  free function unambiguously so the method delegates without self-recursion. `DiskEnumerator` init is
+  failable; `snapshotDisks()` returns an empty list when no session is available (sandbox) rather than
+  crashing. Added `tests/USBImagerCoreTests/DiskSourceServiceTests.swift` with 14 tests: 5 for
+  `DefaultImageSourceService` (correct size for a real `/tmp` file at 1 KB, 0 B, and 4 MB; `CoreError.badInput`
+  for a missing file; `CoreError.badInput` for a directory path) and 9 for `DefaultDiskTargetService`
+  (valid target from mixed list, all-invalid empty result, sourceBackingBSDName overlap, empty input,
+  displayName formatting for USB/SD/NVMe/virtual buses, bsdName-first invariant). Verified: `swift build`
+  -> `Build complete!`; `swift test --filter USBImagerCoreTests` -> 14 new WP-1c tests passed; all
+  pre-existing WP-1a/1b/1d tests in the suite also passed (3 WP-1d test failures are pre-existing issues
+  in that workstream, not introduced here).
+
+- Added `Sources/USBImagerCore/ChecksumService.swift` (WP-1b): `DefaultChecksumService`
+  conforming to the frozen `ChecksumService` protocol. Validates pasted 128-hex SHA-512
+  strings (strips whitespace, maps `ChecksumFileError` to `CoreError.badInput`); parses a
+  `SHA512SUMS` body via `Verifier.ChecksumFile` and matches by last path component (throws
+  `CoreError.badInput` on malformed body or no match); compares digests with `==`; resolves
+  `ChecksumMatchOutcome` in fixed priority order (official digest first, then Keychain trusted
+  cache via `KeychainStore.lookup`, then `noOfficialChecksum`); and performs Keychain
+  lookup/save through an injected `KeychainStore` (in-memory backend in tests). The save
+  method is explicit caller-invoked; duplicate-item saves are swallowed as success; Keychain
+  errors in `matchOutcome` are swallowed as cache misses so flash results always resolve. No
+  SwiftUI/AppKit. Added `Tests/USBImagerCoreTests/ChecksumServiceTests.swift` with 23 tests
+  covering valid/invalid pasted hex, SHA512SUMS match and no-match, outcome priority for all
+  four `ChecksumMatchOutcome` cases, Keychain save+lookup roundtrip, duplicate save, and
+  distinct byte-length keying. Blocked from full `swift test --filter USBImagerCoreTests` run
+  by a compile error in the sibling `DiskTargetService.swift` (WP-1c; calls
+  `DiskModel.validTargets(...)` instead of the module-level `validTargets(...)`); this error
+  is in the WP-1c scope and not touched here per boundary rules. `ChecksumService.swift`
+  itself produces no compiler errors or warnings.
+
+- Added the `USBImagerCore` library target (WP-1a core seam) as the foundational
+  shared seam for the GUI/CLI split. Created `Sources/USBImagerCore/FlashProgressData.swift`
+  (numeric-only progress value: a `Phase` enum with `.writing`/`.verifying`, plus
+  `bytesDone`/`totalBytes`/optional `fraction`, no display strings),
+  `Sources/USBImagerCore/CoreError.swift` (the `CoreError` typed-error surface, the
+  `CoreExitCode` table 0-6 from the plan's CLI contract via `CoreError.exitCode`, and the
+  declared `userMessage(for: FlashEngineError)` mapping with a routing stub WP-1d fills in),
+  and `Sources/USBImagerCore/Services.swift` (frozen service signatures the M1 lanes
+  implement: `ChecksumService` + `ChecksumMatchOutcome` for WP-1b, `ImageSourceService` and
+  `DiskTargetService` for WP-1c, `FlashOrchestrationService` + `FlashEngineFactory` +
+  `FlashRunResult` for WP-1d). Wired the `USBImagerCore` target + library product into
+  `Package.swift` (depends on `DiskModel`, `Verifier`, `FlashEngine`, `KeychainStore`,
+  `HelperProtocol`; imports no SwiftUI/AppKit) and added the `Tests/USBImagerCoreTests`
+  target with `SeamSmokeTests.swift` (6 tests) so sibling lanes have a test home. Key
+  choice: `USBImagerCore` is the single workflow home and the seam types/signatures are
+  frozen here so WP-1b/1c/1d implement against a stable contract. Verified: `./build_debug.sh`
+  -> `Build complete!`; `swift build` -> `Build complete!`; grep finds no `import SwiftUI`/
+  `import AppKit` in `Sources/USBImagerCore`; `swift test --filter USBImagerCoreTests` ->
+  6 tests in 2 suites passed.
 - Added `Sources/AppUI/ByteFormatting.swift` with a single shared
   `formatBytes<Integer: BinaryInteger>(_:)` decimal-SI byte formatter for the AppUI
   module, consolidating three byte-identical copies into one helper (see Fixes).
@@ -16,6 +370,50 @@
   succeeded->4, failed->4, cancelled->4) to `tests/AppUITests/AppViewModelTests.swift`.
 
 ### Behavior or Interface Changes
+
+- Enlarged the empty-state placeholder icons in all four GUI panels (`Sources/AppUI/`
+  `SourcePanel.swift`, `TargetPanel.swift`, `FlashPanel.swift`, `VerifyPanel.swift`) to a
+  consistent `.font(.system(size: 64))` (was 38/28/34/34) and bumped each empty-state `VStack`
+  spacing to 12 so the larger icon does not crowd the caption. The icons now read as clear focal
+  points proportional to the tall cards while captions and accent/active-inactive highlighting stay
+  unchanged. App-wide visual change (not gated on `documentationRender`); regenerated
+  `screenshots/main_window.png` (475 KB) and `screenshots/step2_target.png` (442 KB) offscreen with
+  activation policy `.prohibited` (nothing on screen). `swift test` -> 312 tests in 76 suites passed.
+
+- Raised documentation-render text contrast for legible screenshots by keeping the cards DARK and
+  making the TEXT LIGHT: when `documentationRender` is true, `Sources/AppUI/StyleHelpers.swift` keeps
+  the panel card on its dark charcoal surface and promotes the panel foreground hierarchy via the
+  three-argument `foregroundStyle(.white, white@0.82, white@0.62)` so every panel's faint
+  `.foregroundStyle(.secondary)` header and body label resolves to bright near-white text without
+  editing the panel views; `.colorScheme(.dark)` is forced so control chrome resolves for dark. The
+  step-hue tint keeps its interactive opacities (0.30 active / 0.07 inactive) and the rim is slightly
+  stronger (0.70/0.22 at 1.5pt) so Source idle-purple and Target loud-blue at step 2 stay recognizable
+  on the dark card. The previous dark-charcoal doc card left `.secondary` labels dim; promoting the
+  foreground (not lightening the card) fixes it. The interactive app (flag false) Liquid Glass
+  appearance is unchanged (all edits live inside `documentationRender` branches). Regenerated
+  `screenshots/main_window.png` (451 KB) and `screenshots/step2_target.png` (437 KB); the
+  "1 Source"/"2 Target"/"3 Flash"/"4 Verify" headers, the "No image selected"/"No removable disks
+  found"/"Select a target first"/"Waiting for flash"/"Choose Image" labels, the "debian.iso / 4.3 GB"
+  source line, and the SF Symbol icons now render as light text/icons on the dark cards and are clearly
+  legible; activation policy stays `.prohibited` (nothing appears on screen). `swift test` -> 312 tests
+  in 76 suites passed.
+- Refactored `Sources/AppUI/AppViewModel.swift` (WP-2a) into a thin presentation
+  adapter over `USBImagerCore`: source stat now calls `ImageSourceService.byteLength`,
+  target snapshot/filter/display-name go through `DiskTargetService`, checksum
+  parse/validate/match/cache go through `ChecksumService`, and the whole write/verify
+  run is delegated to the `FlashOrchestrationService` actor (the view model no longer
+  drives `FlashEngine` or consumes `progressStream` directly). The view model retains
+  only presentation: `FlashState` transitions, `FlashProgressSnapshot` string
+  formatting, the disk-event-to-UI binding, gesture guards, and the core-to-GUI
+  `ChecksumMatchOutcome` mapping; no workflow logic remains duplicated in `AppUI`.
+  Added a service-injection initializer (overridable with fakes) alongside the
+  existing engine-factory initializer, which now builds the `Default*` core services
+  internally so the existing `AppViewModelTests` dependency-injection seam stays
+  unchanged. Added `FlashProgressSnapshot.make(from: FlashProgressData,...)` so the
+  view layer formats the numeric core progress type. Wired `USBImagerCore` as a
+  dependency of the `AppUI` target (and the `AppUITests` target). Added a
+  source-to-target regression test (select source -> `availableTargets` populated ->
+  `flashState.currentStep == 2` -> `selectTarget` advances to step 3).
 
 - `Sources/USBImagerApp/USBImagerApp.swift`: removed the `AppDelegate`
   (`@NSApplicationDelegateAdaptor`) AppKit window-creation workaround and standardized the
@@ -55,8 +453,34 @@
   menus, not just File menu); rewrote `applicationShouldOpenUntitledFile` comment to not
   misattribute window creation (actual window creation is in `ensureWindowVisible()`).
 
+- Refactored launch-argument parsing from a hand-rolled parser to Apple's swift-argument-parser.
+  `AppEntry.main()` now parses a `LaunchOptions: ParsableArguments` (optional `--source`, optional
+  `--auto-exit`) via `parseOrExit()`, which supplies `--help` and validation. The app stays
+  GUI-first (no required args). `--auto-exit` now REQUIRES a value (`--auto-exit=5` or
+  `--auto-exit 5`); bare `--auto-exit` is no longer accepted. `capture_screenshot.sh` updated to
+  `--auto-exit=5`.
+
 ### Fixes and Maintenance
 
+- Suppressed an `ImageRenderer` artifact in the Target-panel documentation screenshots: the live
+  refresh `Button` and the "Optional checksum" toggle `Button`/`TextField` rasterized offscreen as a
+  filled olive/yellow disabled bar with a red no-entry glyph. In `Sources/AppUI/TargetPanel.swift`,
+  `documentationRender`-gated branches now substitute a plain refresh icon and a static "Optional
+  checksum" label for those controls so `screenshots/step2_target.png` renders cleanly (headers,
+  icons, and labels unchanged). The interactive app (flag false) keeps the live Button/TextField and
+  is byte-for-byte equivalent. Regenerated both PNGs via `swift run USBImagerShots` (activation policy
+  stays `.prohibited`; nothing appears on screen): `main_window.png` ~454 KB, `step2_target.png`
+  ~435 KB. `swift test` -> 312 tests in 76 suites passed.
+- Fixed `AppViewModel.selectSource` swallowing a stat error: replaced `(try? byteLength(of:)) ?? 0`
+  with a direct `do/catch` that logs a clear line and returns early (source stays unselected, step 1)
+  when `ImageSourceService.byteLength` throws; a successful stat still advances to step 2 with the
+  real byte length. Added `AlwaysThrowingImageSourceService` and `FixedByteLengthImageSourceService`
+  stubs in `tests/AppUITests/AppViewModelTests.swift`; the regression suite (`AppViewModel: selectSource
+  stat-error regression`) uses them to drive the error path and success path without any filesystem
+  dependency. Also updated five existing tests that called `selectSource` with non-existent paths
+  (they were silently passing under the old bug) to write real temp files for the success path.
+  Verified: `swift test --filter AppViewModelTests` -> 41 tests passed; `swift test` -> 276 tests in
+  65 suites passed.
 - `Sources/AppUI/StyleHelpers.swift`: removed dead `PanelMetrics.buttonCornerRadius` (zero
   references in Sources/).
 - Removed three byte-identical decimal-SI byte formatters and routed all call sites through the
@@ -77,17 +501,6 @@
 - Added the `swift-argument-parser` package dependency (1.3.0+) to the `USBImagerApp` executable
   target in `Package.swift`.
 
-### Behavior or Interface Changes
-
-- Refactored launch-argument parsing from a hand-rolled parser to Apple's swift-argument-parser.
-  `AppEntry.main()` now parses a `LaunchOptions: ParsableArguments` (optional `--source`, optional
-  `--auto-exit`) via `parseOrExit()`, which supplies `--help` and validation. The app stays
-  GUI-first (no required args). `--auto-exit` now REQUIRES a value (`--auto-exit=5` or
-  `--auto-exit 5`); bare `--auto-exit` is no longer accepted. `capture_screenshot.sh` updated to
-  `--auto-exit=5`.
-
-### Fixes and Maintenance
-
 - Simplified `capture_screenshot.sh` to a local-only developer helper: replaced
   `killall USBImagerApp` with `pkill USBImagerApp`, removed `swift build --show-bin-path`
   (used literal relative path `.build/arm64-apple-macosx/debug/USBImagerApp` instead),
@@ -104,34 +517,21 @@
   idle exits) plus log lines. Verification: `swift build` -> `Build complete!`; `swift test` ->
   203 tests in 47 suites passed.
 
+### Decisions and Failures
+
+- Rejected repeated foreground GUI launches as the M0 validation method. The probe ran
+  roughly two dozen visible GUI windows to collect reliability data, stealing window focus on
+  an actively-used machine. This is unacceptable: no automated or agent-driven step may launch
+  a visible foreground GUI window. Going forward, routine validation is headless or offscreen
+  (`swift test`, the `ImageRenderer`-based offscreen render harness planned for WP-4b, and
+  log/state assertions). At most one visible GUI launch is allowed -- a final smoke test the
+  human explicitly approves and runs as a copy-pasteable command. The mechanism finding (custom
+  URL scheme, packaged `.app`, LaunchServices registration, the two log signals, auto-exit
+  gating fix) stands. Only the validation method is rejected. Recorded in
+  `docs/active_plans/decisions/wp0_gui_source_handoff_probe.md` under "Rejected validation
+  method: repeated foreground launches".
+
 ## 2026-06-16
-
-### Behavior or Interface Changes
-
-- `Sources/AppUI/StyleHelpers.swift`: redesigned the active-panel focus to a
-  Liquid-Glass-native treatment. The focused card uses brighter `.regular.interactive()` glass,
-  a thin white edge highlight, a soft blurred white glow, a whisper of accent-colored shadow,
-  and a strong black drop shadow with ~1.025 lift; unfocused panels recede (opacity 0.74, reduced
-  saturation, slight negative brightness, small grounding shadow). Replaces the earlier hard white
-  inset frame so the active step reads as a lit glass card lifted toward the user, not a bordered
-  box. Per-step accent (purple/blue/teal/green) stays in the panel icon and step badge.
-  `PanelMetrics.cardCornerRadius` changed from 20 to 22.
-
-- `build_debug.sh` and `build_release.sh`: replaced fragile `find -perm +0111`
-  scan with a direct check for the known product binary `USBImagerApp` in the
-  SwiftPM bin path. Both scripts now print `Executable: <full path>` after a
-  successful build instead of the false "library-only package" message.
-
-- `Sources/PrivilegedHelper/HelperService.swift`: introduced `TokenRegistry`
-  actor to own the per-job `cancelTokens` dictionary. Removed the `NSLock` +
-  mutable dictionary from `HelperService` and changed the conformance from
-  `@unchecked Sendable` to plain `Sendable`. The synchronous `cancel(jobIDData:)`
-  @objc method uses a fire-and-forget `Task { await registry.token(for:) }` to
-  retrieve the token before calling `cancel()`, which is sound because
-  `CancellationToken.cancel()` is already thread-safe and XPC cancel is
-  best-effort. The `verify` method was also migrated from a raw `workQueue.async`
-  block to a `Task + withCheckedContinuation` pattern to permit the actor `await`.
-  No external behaviour or cancellation contract changed.
 
 ### Additions and New Features
 
@@ -323,8 +723,6 @@
   this CLT/macOS-26 environment (no such module), so the scaffold compile-time
   pattern is extended with precondition-based startup assertions.
 
-
-
 - Created `Package.swift` at repo root with swift-tools-version 6.2 (installed
   toolchain: Swift 6.3.2). Platform set to `.macOS(.v26)` (Tahoe), available
   in PackageDescription 6.2+.
@@ -341,7 +739,47 @@
 - `.gitignore` entries for Swift artifacts: `.build/`, `.swiftpm/`,
   `DerivedData/`, `*.xcodeproj/xcuserdata/`, etc.
 
+- `Sources/AppUI/StyleHelpers.swift`: added `PanelAccent` palette as the single
+  source of four per-step hues: Source=purple, Target=blue, Flash=teal, Verify=green,
+  forming a continuous left-to-right hue walk across the four panels.
+- Added screenshot `screenshots/main_window.png` (51K) showing the four panels with
+  the new per-step hue progression. `swift build` -> `Build complete!`;
+  `swift test` -> 203 tests in 47 suites passed.
+
+- Added a `currentStep: Int` derivation to `Sources/AppUI/FlashState.swift`
+  (idle->1, sourceSelected->2, targetSelected/confirming/flashing->3, verifying/terminal->4)
+  so exactly one panel is the loud "current step" at a time.
+- Added a `--source PATH` launch flag to `Sources/USBImagerApp/USBImagerApp.swift`
+  (also `--source=PATH`; expands a leading `~`) that preselects a disk image on startup and
+  opens on step 2; help text updated. Verification: `swift build` -> `Build complete!`;
+  `swift test` -> Test run with 203 tests in 47 suites passed.
+
 ### Behavior or Interface Changes
+
+- `Sources/AppUI/StyleHelpers.swift`: redesigned the active-panel focus to a
+  Liquid-Glass-native treatment. The focused card uses brighter `.regular.interactive()` glass,
+  a thin white edge highlight, a soft blurred white glow, a whisper of accent-colored shadow,
+  and a strong black drop shadow with ~1.025 lift; unfocused panels recede (opacity 0.74, reduced
+  saturation, slight negative brightness, small grounding shadow). Replaces the earlier hard white
+  inset frame so the active step reads as a lit glass card lifted toward the user, not a bordered
+  box. Per-step accent (purple/blue/teal/green) stays in the panel icon and step badge.
+  `PanelMetrics.cardCornerRadius` changed from 20 to 22.
+
+- `build_debug.sh` and `build_release.sh`: replaced fragile `find -perm +0111`
+  scan with a direct check for the known product binary `USBImagerApp` in the
+  SwiftPM bin path. Both scripts now print `Executable: <full path>` after a
+  successful build instead of the false "library-only package" message.
+
+- `Sources/PrivilegedHelper/HelperService.swift`: introduced `TokenRegistry`
+  actor to own the per-job `cancelTokens` dictionary. Removed the `NSLock` +
+  mutable dictionary from `HelperService` and changed the conformance from
+  `@unchecked Sendable` to plain `Sendable`. The synchronous `cancel(jobIDData:)`
+  @objc method uses a fire-and-forget `Task { await registry.token(for:) }` to
+  retrieve the token before calling `cancel()`, which is sound because
+  `CancellationToken.cancel()` is already thread-safe and XPC cancel is
+  best-effort. The `verify` method was also migrated from a raw `workQueue.async`
+  block to a `Task + withCheckedContinuation` pattern to permit the actor `await`.
+  No external behaviour or cancellation contract changed.
 
 - `Sources/AppUI/StyleHelpers.swift`: `PanelHeader` now accepts an `accent: Color`
   parameter; the active step badge fills with the per-step hue instead of the
@@ -352,27 +790,6 @@
 - `SourcePanel`, `TargetPanel`, `FlashPanel`, `VerifyPanel`: each panel passes its
   step hue into `PanelHeader`, `panelCard(tint:)`, and the large SF Symbol icon
   (muted when the panel is inactive). `DiskRow` selection highlight uses the target blue.
-
-### Additions and New Features
-
-- `Sources/AppUI/StyleHelpers.swift`: added `PanelAccent` palette as the single
-  source of four per-step hues: Source=purple, Target=blue, Flash=teal, Verify=green,
-  forming a continuous left-to-right hue walk across the four panels.
-- Added screenshot `screenshots/main_window.png` (51K) showing the four panels with
-  the new per-step hue progression. `swift build` -> `Build complete!`;
-  `swift test` -> 203 tests in 47 suites passed.
-
-### Decisions and Failures
-
-- Flash resting hue is teal; the destructive-flash danger signal remains the
-  existing red confirmation dialog, unchanged. `StatusBadge` terminal semantic
-  colors (success green, warning orange, failure red) are unchanged.
-
-- Created `docs/CODE_ARCHITECTURE.md`: layered architecture map, four-step
-  data-flow walkthrough, security posture summary, module table, dependency
-  graph, and threading model. ASCII diagrams only; grounded from source.
-
-### Behavior or Interface Changes
 
 - `FlashRequest` now carries `jobID: JobID` and `sourceBackingBSDName: String?`.
   `FlashEngine.flash` stamps its own jobID into the request so the helper echoes
@@ -390,6 +807,25 @@
   out. Inactive cards draw no frame. Each panel passes its existing active/enabled
   boolean (the same one given to `PanelHeader(active:)`). Verified: `swift build` ->
   `Build complete!`; `swift test` -> Test run with 203 tests in 47 suites passed.
+
+- `Sources/AppUI/StyleHelpers.swift`: finalized panel cards as true system Liquid Glass.
+  Each card is a plain `.glassEffect(.regular, in:)` surface (no opaque fill), so the
+  window gradient backdrop shows through and the glass refracts color. Focus uses
+  restrained accents only: a per-step tint overlay
+  (`fill(accent.opacity(0.10)).blendMode(.plusLighter)`), a brighter white rim (0.28 vs
+  0.08), a drop shadow, and a slight scale (1.02 vs 0.99). Supersedes the earlier
+  same-day solid-tinted-base and hard-frame focus iterations.
+  `Sources/AppUI/RootView.swift` keeps the subtle gradient background that gives the
+  glass color to catch.
+- `--auto-exit` default delay changed from 30s to 5s in
+  `Sources/USBImagerApp/USBImagerApp.swift`; help text updated to match.
+- The loud per-step highlight now tracks the current step only: completed steps subdue again
+  (e.g. Source dims after an image is chosen). Each panel's card tint, header badge, and large
+  icon key off `currentStep`; enable/disable interactivity is unchanged.
+- Tuned the loud-active / subdued-inactive hue hierarchy in `Sources/AppUI/StyleHelpers.swift`:
+  active card step-hue tint 0.30 + rim 0.60 + colored glow; inactive same-hue tint 0.07 + rim
+  0.14 + deeper charcoal. Large placeholder icons follow the same hierarchy (active full hue,
+  inactive 0.6) in the four panel files.
 
 ### Fixes and Maintenance
 
@@ -426,6 +862,16 @@
   error in the original brief and scaffold); correct value is `cc`. Verified
   independently with `printf 'abc' | openssl dgst -sha512`.
 
+### Decisions and Failures
+
+- Flash resting hue is teal; the destructive-flash danger signal remains the
+  existing red confirmation dialog, unchanged. `StatusBadge` terminal semantic
+  colors (success green, warning orange, failure red) are unchanged.
+
+- Created `docs/CODE_ARCHITECTURE.md`: layered architecture map, four-step
+  data-flow walkthrough, security posture summary, module table, dependency
+  graph, and threading model. ASCII diagrams only; grounded from source.
+
 ### Developer Tests and Notes
 
 - Restored the two `FlashEngine` progress-forwarding tests (single and multiple
@@ -450,34 +896,3 @@
   `USBImagerApp_*.png` are now gitignored.
 - Verification: `swift build` -> `Build complete!`; `swift test` -> Test run with
   203 tests in 47 suites passed.
-
-### Behavior or Interface Changes
-
-- `Sources/AppUI/StyleHelpers.swift`: finalized panel cards as true system Liquid Glass.
-  Each card is a plain `.glassEffect(.regular, in:)` surface (no opaque fill), so the
-  window gradient backdrop shows through and the glass refracts color. Focus uses
-  restrained accents only: a per-step tint overlay
-  (`fill(accent.opacity(0.10)).blendMode(.plusLighter)`), a brighter white rim (0.28 vs
-  0.08), a drop shadow, and a slight scale (1.02 vs 0.99). Supersedes the earlier
-  same-day solid-tinted-base and hard-frame focus iterations.
-  `Sources/AppUI/RootView.swift` keeps the subtle gradient background that gives the
-  glass color to catch.
-- `--auto-exit` default delay changed from 30s to 5s in
-  `Sources/USBImagerApp/USBImagerApp.swift`; help text updated to match.
-- The loud per-step highlight now tracks the current step only: completed steps subdue again
-  (e.g. Source dims after an image is chosen). Each panel's card tint, header badge, and large
-  icon key off `currentStep`; enable/disable interactivity is unchanged.
-- Tuned the loud-active / subdued-inactive hue hierarchy in `Sources/AppUI/StyleHelpers.swift`:
-  active card step-hue tint 0.30 + rim 0.60 + colored glow; inactive same-hue tint 0.07 + rim
-  0.14 + deeper charcoal. Large placeholder icons follow the same hierarchy (active full hue,
-  inactive 0.6) in the four panel files.
-
-### Additions and New Features
-
-- Added a `currentStep: Int` derivation to `Sources/AppUI/FlashState.swift`
-  (idle->1, sourceSelected->2, targetSelected/confirming/flashing->3, verifying/terminal->4)
-  so exactly one panel is the loud "current step" at a time.
-- Added a `--source PATH` launch flag to `Sources/USBImagerApp/USBImagerApp.swift`
-  (also `--source=PATH`; expands a leading `~`) that preselects a disk image on startup and
-  opens on step 2; help text updated. Verification: `swift build` -> `Build complete!`;
-  `swift test` -> Test run with 203 tests in 47 suites passed.

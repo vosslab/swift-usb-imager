@@ -1,34 +1,27 @@
 #!/bin/sh
 #
-# capture_screenshot.sh - LOCAL developer helper for app screenshots.
+# capture_screenshot.sh - deterministic, non-intrusive app screenshots.
 #
-# Intentionally local-only: relies on the easy-screenshot tool at
-# ~/nsh/easy-screenshot/run.sh and on the fixed local repo path below.
+# Renders the SwiftUI panel state to PNG files OFFSCREEN via the USBImagerShots
+# harness and exits. It never opens a visible window and never steals focus, so
+# it is safe to run on a machine in active use. This replaces the previous flow
+# of launching the live foreground GUI twice and killing it with pkill, which
+# was rejected as disruptive (see
+# docs/active_plans/decisions/wp0_gui_source_handoff_probe.md).
 #
-# Builds the debug app, launches it twice, and screenshots each run:
-# first idle (main window), then with a preselected source image (step 2,
-# target selection). Both launches use --auto-exit so the app quits on its
-# own. Output PNGs land in the repo's screenshots/ directory with stable names.
+# Output PNGs land in screenshots/ with stable names:
+#   screenshots/main_window.png  - idle main window (step 1)
+#   screenshots/step2_target.png - preselected source advancing to step 2
+#
+# The harness asserts the view-model state reached step 2 before writing
+# step2_target.png and exits non-zero otherwise, so a blank PNG never passes.
+#
+# To run the live GUI as an opt-in human smoke test instead (NOT the screenshot
+# path), use: usbimager open --source <iso> --auto-exit N
 
 cd /Users/vosslab/nsh/swift-usb-imager
 
-# Build the debug binary.
-./build_debug.sh
-
-mkdir -p screenshots
-
-# Idle launch: capture the main window.
-.build/arm64-apple-macosx/debug/USBImagerApp --auto-exit=5 &
-sleep 2
-~/nsh/easy-screenshot/run.sh --application USBImagerApp -f screenshots/main_window.png
-sleep 5
-
-pkill USBImagerApp
-sleep 1
-
-# Preselected-source launch: capture step 2 (target selection).
-.build/arm64-apple-macosx/debug/USBImagerApp --auto-exit=5 --source=~/Downloads/debian-13.5.0-amd64-DVD-1.iso &
-sleep 2
-~/nsh/easy-screenshot/run.sh --application USBImagerApp -f screenshots/step2_target.png
-
-pkill USBImagerApp
+# Render both screenshots offscreen; `swift run` builds the harness as needed.
+# The harness writes screenshots/main_window.png and screenshots/step2_target.png
+# and exits non-zero if the step-2 render state did not advance.
+swift run USBImagerShots

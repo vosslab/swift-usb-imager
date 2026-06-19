@@ -16,8 +16,11 @@ let package = Package(
         .library(name: "KeychainStore",    targets: ["KeychainStore"]),
         .library(name: "FlashEngine",      targets: ["FlashEngine"]),
         .library(name: "PrivilegedHelper", targets: ["PrivilegedHelper"]),
+        .library(name: "USBImagerCore",    targets: ["USBImagerCore"]),
         .library(name: "AppUI",            targets: ["AppUI"]),
         .executable(name: "USBImagerApp",  targets: ["USBImagerApp"]),
+        .executable(name: "usbimager",     targets: ["USBImagerCLI"]),
+        .executable(name: "USBImagerShots", targets: ["USBImagerShots"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
@@ -52,17 +55,46 @@ let package = Package(
             path: "Sources/PrivilegedHelper"
         ),
         .target(
+            name: "USBImagerCore",
+            dependencies: ["DiskModel", "Verifier", "FlashEngine", "KeychainStore", "HelperProtocol"],
+            path: "Sources/USBImagerCore"
+        ),
+        .target(
             name: "AppUI",
-            dependencies: ["DiskModel", "FlashEngine", "Verifier", "KeychainStore"],
+            dependencies: ["USBImagerCore", "DiskModel", "FlashEngine", "Verifier", "KeychainStore"],
             path: "Sources/AppUI"
         ),
         .executableTarget(
             name: "USBImagerApp",
             dependencies: [
                 "AppUI", "FlashEngine", "DiskModel", "KeychainStore",
+            ],
+            path: "Sources/USBImagerApp",
+            // Info.plist is consumed by build_debug.sh when it assembles the
+            // USBImagerApp.app bundle (it carries CFBundleURLTypes for the
+            // usbimager:// scheme); it is not a SwiftPM build resource.
+            exclude: ["Info.plist"]
+        ),
+        // The `usbimager` terminal executable. Thin CLI over USBImagerCore; it
+        // depends on USBImagerCore + ArgumentParser only (the GUI library and the
+        // workflow libraries stay reachable only via USBImagerCore).
+        .executableTarget(
+            name: "USBImagerCLI",
+            dependencies: [
+                "USBImagerCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/USBImagerApp"
+            path: "Sources/USBImagerCLI"
+        ),
+        // The `USBImagerShots` screenshot render harness. It builds an AppViewModel
+        // in the desired state and renders the SwiftUI panels to PNG offscreen via
+        // ImageRenderer, then exits -- it never opens a visible window or steals
+        // focus. Depends on AppUI (the views) + USBImagerCore (the service protocols
+        // for the injected fakes) + DiskModel (the disk-target fixture).
+        .executableTarget(
+            name: "USBImagerShots",
+            dependencies: ["AppUI", "USBImagerCore", "DiskModel"],
+            path: "Sources/USBImagerShots"
         ),
 
         // MARK: - Test targets
@@ -98,8 +130,24 @@ let package = Package(
         ),
         .testTarget(
             name: "AppUITests",
-            dependencies: ["AppUI", "FlashEngine", "DiskModel", "HelperProtocol", "KeychainStore"],
+            dependencies: ["AppUI", "USBImagerCore", "FlashEngine", "DiskModel", "HelperProtocol", "KeychainStore"],
             path: "Tests/AppUITests"
+        ),
+        .testTarget(
+            name: "USBImagerCoreTests",
+            dependencies: [
+                "USBImagerCore", "DiskModel", "Verifier", "FlashEngine",
+                "KeychainStore", "HelperProtocol",
+            ],
+            path: "Tests/USBImagerCoreTests"
+        ),
+        .testTarget(
+            name: "USBImagerCLITests",
+            dependencies: [
+                "USBImagerCLI", "USBImagerCore", "DiskModel", "Verifier",
+                "KeychainStore",
+            ],
+            path: "Tests/USBImagerCLITests"
         ),
     ]
 )

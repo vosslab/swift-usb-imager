@@ -6,8 +6,12 @@ report_*.txt
 _temp*.?*
 # === LOCAL ===
 # Template-only ignores.
+# M0 handoff-probe throwaway .app bundle (LaunchServices refuses /tmp bundles).
+_spike_scratch/
 # === SWIFT ===
 .build/
+# Assembled dev app bundle (build_debug.sh output; carries CFBundleURLTypes).
+USBImagerApp.app/
 .swiftpm/
 DerivedData/
 *.xcodeproj/xcuserdata/

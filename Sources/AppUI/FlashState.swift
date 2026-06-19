@@ -8,6 +8,7 @@
 import DiskModel
 import Foundation
 import HelperProtocol
+import USBImagerCore
 
 // MARK: - OfficialChecksumSource
 
@@ -102,7 +103,62 @@ public struct FlashProgressSnapshot: Sendable, Equatable {
         )
     }
 
+    /// Build a snapshot from a numeric core `FlashProgressData` value plus timing.
+    ///
+    /// This is the path used by `AppViewModel` once the workflow moved to
+    /// `USBImagerCore`: the core flash service emits numeric `FlashProgressData`
+    /// samples, and this view-layer factory formats them into display strings.
+    /// The core `Phase` is intentionally narrower than the helper `FlashPhase`
+    /// (only `.writing`/`.verifying`); its label mapping lives here.
+    ///
+    /// - Parameters:
+    ///   - data: the numeric progress sample from the core flash service.
+    ///   - phaseStart: wall-clock time when the current phase began.
+    ///   - now: current wall-clock time (injectable for tests).
+    public static func make(
+        from data: FlashProgressData,
+        phaseStart: Date,
+        now: Date = Date()
+    ) -> FlashProgressSnapshot {
+        let total = data.totalBytes
+        let done = data.bytesDone
+        let fraction: Double
+        if total > 0 {
+            fraction = min(1.0, Double(done) / Double(total))
+        } else {
+            fraction = 0
+        }
+        let elapsed = now.timeIntervalSince(phaseStart)
+        let speedLabel: String
+        if elapsed > 0 && done > 0 {
+            let bytesPerSecond = Double(done) / elapsed
+            speedLabel = formatBytes(UInt64(bytesPerSecond)) + "/s"
+        } else {
+            speedLabel = ""
+        }
+        let phaseLabel = Self.label(for: data.phase)
+        let transferLabel = formatBytes(done) + " / " + formatBytes(total)
+        return FlashProgressSnapshot(
+            fraction: fraction,
+            bytesDone: done,
+            totalBytes: total,
+            phaseLabel: phaseLabel,
+            speedLabel: speedLabel,
+            transferLabel: transferLabel
+        )
+    }
+
     // MARK: - Private helpers
+
+    /// Human-readable phase label for a core progress-bar phase.
+    private static func label(for phase: FlashProgressData.Phase) -> String {
+        switch phase {
+        case .writing:
+            return "Writing"
+        case .verifying:
+            return "Verifying"
+        }
+    }
 
     /// Human-readable phase label suitable for a progress heading.
     private static func label(for phase: FlashPhase) -> String {

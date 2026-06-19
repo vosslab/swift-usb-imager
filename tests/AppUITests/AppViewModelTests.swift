@@ -23,6 +23,7 @@ import FlashEngine
 import DiskModel
 import HelperProtocol
 import KeychainStore
+import USBImagerCore
 
 // MARK: - FakeHelperConnection (reused from FlashEngineTests conceptually)
 
@@ -90,6 +91,111 @@ private func makeViewModel(
     return viewModel
 }
 
+// MARK: - Fake core services for the source -> target regression
+
+/// A `DiskTargetService` that returns a fixed disk list and forwards filtering to
+/// `DiskModel` (no safety-rule re-implementation). Lets a test drive the
+/// source -> target availability path without a live DiskArbitration session.
+private struct StubDiskTargetService: DiskTargetService {
+
+    let disks: [DiskDescriptor]
+
+    func snapshotDisks() async -> [DiskDescriptor] {
+        disks
+    }
+
+    func validTargets(
+        from disks: [DiskDescriptor],
+        imageSizeBytes: Int,
+        sourceBackingBSDName: String?
+    ) -> [DiskDescriptor] {
+        // Delegate to the real DiskModel safety filter so the regression exercises
+        // the actual safety rules, not a stub. The file-scope wrapper avoids the
+        // bare call self-resolving to this method.
+        diskModelValidTargetsForTest(
+            from: disks,
+            imageSizeBytes: imageSizeBytes,
+            sourceBackingBSDName: sourceBackingBSDName
+        )
+    }
+
+    func displayName(for disk: DiskDescriptor) -> String {
+        "\(disk.bsdName)"
+    }
+}
+
+/// File-scope wrapper naming the DiskModel `validTargets` free function for the
+/// stub above (a bare call inside the method would self-resolve and recurse).
+private func diskModelValidTargetsForTest(
+    from disks: [DiskDescriptor],
+    imageSizeBytes: Int,
+    sourceBackingBSDName: String?
+) -> [DiskDescriptor] {
+    validTargets(from: disks, imageSizeBytes: imageSizeBytes, sourceBackingBSDName: sourceBackingBSDName)
+}
+
+/// A `FlashOrchestrationService` that never runs a flash; the source -> target
+/// regression does not reach the flash path, so this satisfies the initializer.
+private actor StubFlashOrchestrationService: FlashOrchestrationService {
+
+    func flash(
+        source: URL,
+        target: DiskDescriptor,
+        advisorySHA512: String?,
+        verifyReadBack: Bool,
+        progress: @escaping @Sendable (FlashProgressData) -> Void
+    ) async -> FlashRunResult {
+        .failure(error: .cancelled)
+    }
+
+    func cancel() async {}
+}
+
+// MARK: - Source-to-target regression
+
+@Suite("AppViewModel: source-to-target availability regression")
+struct AppViewModelSourceToTargetTests {
+
+    /// Walk the user-visible flow that is most likely to regress when the stat and
+    /// filter logic moved to core: select a source, confirm a safe target becomes
+    /// available, and confirm the flash state advances to step 2 (Target).
+    @Test("selectSource populates availableTargets and advances to step 2")
+    @MainActor
+    func sourceSelectionPopulatesTargets() async {
+        // A small source (1 KB) so the 32 GB USB disk is a valid target.
+        let tmpDir = NSTemporaryDirectory()
+        let imageURL = URL(fileURLWithPath: tmpDir).appendingPathComponent("wp2a_regression.img")
+        let oneKB = Data(count: 1024)
+        try? oneKB.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        let safeDisk = makeSafeTarget()
+        let vm = AppViewModel(
+            imageSourceService: DefaultImageSourceService(),
+            diskTargetService: StubDiskTargetService(disks: [safeDisk]),
+            checksumService: DefaultChecksumService(
+                keychainStore: KeychainStore(backend: InMemoryKeychainBackend())
+            ),
+            flashService: StubFlashOrchestrationService(),
+            diskEnumerator: nil
+        )
+
+        await vm.selectSource(imageURL)
+
+        // The safe disk became an available target through the core filter.
+        #expect(vm.availableTargets.contains(safeDisk))
+        // The source size was stat'd through the core image-source service.
+        #expect(vm.sourceImageBytes == 1024)
+        // The UI advanced to step 2 (Target panel).
+        #expect(vm.flashState.currentStep == 2)
+
+        // Selecting that now-available target advances to step 3 (Flash).
+        vm.selectTarget(safeDisk)
+        #expect(vm.flashState.currentStep == 3)
+        #expect(vm.selectedTarget == safeDisk)
+    }
+}
+
 // MARK: - Source selection tests
 
 @Suite("AppViewModel: source selection")
@@ -108,7 +214,12 @@ struct AppViewModelSourceSelectionTests {
                 ))
             ))
         })
-        let url = URL(fileURLWithPath: "/tmp/test_image.img")
+        // Write a real temp file so selectSource can stat it successfully.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("test_image_\(UUID().uuidString).img")
+        try? Data(count: 512).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
         await vm.selectSource(url)
 
         if case .sourceSelected(let resultURL) = vm.flashState {
@@ -131,7 +242,12 @@ struct AppViewModelSourceSelectionTests {
                 ))
             ))
         })
-        let url = URL(fileURLWithPath: "/tmp/image.iso")
+        // Write a real temp file so selectSource can stat it successfully.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("image_\(UUID().uuidString).iso")
+        try? Data(count: 512).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
         await vm.selectSource(url)
         #expect(vm.sourceURL == url)
     }
@@ -155,8 +271,13 @@ struct AppViewModelTargetSelectionTests {
                 ))
             ))
         })
-        // Select a source first.
-        await vm.selectSource(URL(fileURLWithPath: "/tmp/image.img"))
+        // Write a real temp file so selectSource advances to .sourceSelected.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("image_\(UUID().uuidString).img")
+        try? Data(count: 512).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        await vm.selectSource(url)
 
         // Manually inject a safe target into availableTargets so selectTarget works.
         // AppViewModel.availableTargets is private(set); we use the disk event path
@@ -222,7 +343,13 @@ struct AppViewModelConfirmationTests {
                 ))
             ))
         })
-        await vm.selectSource(URL(fileURLWithPath: "/tmp/img.iso"))
+        // Write a real temp file so selectSource advances to .sourceSelected.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("img_\(UUID().uuidString).iso")
+        try? Data(count: 512).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        await vm.selectSource(url)
         vm.requestConfirmation()
         // Should still be .sourceSelected, not .confirming.
         if case .sourceSelected = vm.flashState {
@@ -305,7 +432,13 @@ struct AppViewModelFlashLifecycleTests {
                 ))
             ))
         })
-        await vm.selectSource(URL(fileURLWithPath: "/tmp/img.img"))
+        // Write a real temp file so selectSource advances to .sourceSelected.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("img_\(UUID().uuidString).img")
+        try? Data(count: 512).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        await vm.selectSource(url)
         await vm.startFlash()
         if case .sourceSelected = vm.flashState {
             // Correct: no-op from sourceSelected.
@@ -349,7 +482,13 @@ struct AppViewModelFlashLifecycleTests {
                 ))
             ))
         })
-        await vm.selectSource(URL(fileURLWithPath: "/tmp/img.img"))
+        // Write a real temp file so selectSource advances to .sourceSelected.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("img_\(UUID().uuidString).img")
+        try? Data(count: 512).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        await vm.selectSource(url)
         vm.reset()
         if case .idle = vm.flashState {
             // Correct.
@@ -371,7 +510,13 @@ struct AppViewModelFlashLifecycleTests {
                 ))
             ))
         })
-        await vm.selectSource(URL(fileURLWithPath: "/tmp/img.img"))
+        // Write a real temp file so selectSource advances to .sourceSelected.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("img_\(UUID().uuidString).img")
+        try? Data(count: 512).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        await vm.selectSource(url)
         vm.reset()
         #expect(vm.sourceURL == nil)
         #expect(vm.selectedTarget == nil)
@@ -615,6 +760,98 @@ struct FlashStateCurrentStepTests {
     func cancelledIsStep4() {
         let state = FlashState.cancelled
         #expect(state.currentStep == 4)
+    }
+}
+
+// MARK: - selectSource stat-error regression stubs
+
+/// An `ImageSourceService` stub whose `byteLength(of:)` always throws
+/// `CoreError.badInput`. Injected by the stat-error regression tests to
+/// exercise the error path without any filesystem dependency.
+private struct AlwaysThrowingImageSourceService: ImageSourceService {
+    func byteLength(of url: URL) throws -> Int {
+        throw CoreError.badInput(message: "stub: always throws for testing")
+    }
+}
+
+/// An `ImageSourceService` stub that returns a fixed byte count on every call.
+/// Used by the stat-error regression success-path test so the test controls the
+/// exact byte length without writing a real file.
+private struct FixedByteLengthImageSourceService: ImageSourceService {
+    let length: Int
+    func byteLength(of url: URL) throws -> Int {
+        length
+    }
+}
+
+// MARK: - selectSource stat-error regression
+
+/// Regression suite for the fix to `selectSource` that previously swallowed a
+/// stat error with `(try? ...) ?? 0`, treating unreadable sources as a 0-byte
+/// selected source and advancing the UI to step 2.
+///
+/// After the fix a thrown `CoreError.badInput` from `byteLength(of:)` must leave
+/// the view model on step 1 (`.idle`) with no source URL set. The success path
+/// must still advance to step 2 with the real byte length.
+///
+/// Both error and success tests inject stub `ImageSourceService` implementations
+/// so neither depends on filesystem state.
+@Suite("AppViewModel: selectSource stat-error regression")
+struct AppViewModelSelectSourceStatErrorTests {
+
+    /// Build a view model with an injected `ImageSourceService` and no live disks
+    /// or disk events, isolating the stat-error path.
+    @MainActor
+    private func makeVM(imageSourceService: some ImageSourceService) -> AppViewModel {
+        AppViewModel(
+            imageSourceService: imageSourceService,
+            diskTargetService: StubDiskTargetService(disks: []),
+            checksumService: DefaultChecksumService(
+                keychainStore: KeychainStore(backend: InMemoryKeychainBackend())
+            ),
+            flashService: StubFlashOrchestrationService(),
+            diskEnumerator: nil
+        )
+    }
+
+    /// A throwing `byteLength` must leave the view model on step 1 (`.idle`),
+    /// must not store the source URL, and must not populate `sourceImageBytes`.
+    @Test("selectSource when byteLength throws leaves currentStep at 1")
+    @MainActor
+    func statErrorLeavesStep1() async {
+        let vm = makeVM(imageSourceService: AlwaysThrowingImageSourceService())
+        let url = URL(fileURLWithPath: "/tmp/any_path_never_stat_attempted.img")
+        await vm.selectSource(url)
+
+        // Must remain on step 1: source unselected.
+        #expect(vm.flashState.currentStep == 1)
+        // Must not store the URL (source was not accepted).
+        #expect(vm.sourceURL == nil)
+        // Must not populate a 0-byte entry as if a real source were chosen.
+        #expect(vm.sourceImageBytes == 0)
+        // flashState must be .idle, never .sourceSelected.
+        if case .idle = vm.flashState {
+            // Correct: thrown stat error did not advance the state machine.
+        } else {
+            Issue.record("Expected .idle after stat error, got \(vm.flashState)")
+        }
+    }
+
+    /// A successful `byteLength` must advance to step 2 with the exact byte count
+    /// returned by the service, confirming the success path was not broken.
+    @Test("selectSource when byteLength succeeds advances to step 2 with real byte length")
+    @MainActor
+    func statSuccessAdvancesToStep2() async {
+        let vm = makeVM(imageSourceService: FixedByteLengthImageSourceService(length: 4096))
+        let url = URL(fileURLWithPath: "/tmp/fixture_controlled_by_stub.img")
+        await vm.selectSource(url)
+
+        // Must advance to step 2 (source selected).
+        #expect(vm.flashState.currentStep == 2)
+        // Must record exactly the byte length the stub returned.
+        #expect(vm.sourceImageBytes == 4096)
+        // Must store the source URL.
+        #expect(vm.sourceURL == url)
     }
 }
 

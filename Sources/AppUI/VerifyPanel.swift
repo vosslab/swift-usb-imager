@@ -46,9 +46,9 @@ struct VerifyPanel: View {
     private var waitingView: some View {
         // Loud icon only while Verify is the current step (step 4).
         let isCurrent = vm.flashState.currentStep == 4
-        return VStack(spacing: 8) {
+        return VStack(spacing: 12) {
             Image(systemName: "checkmark.shield")
-                .font(.system(size: 34))
+                .font(.system(size: 64))
                 // Muted verify accent when Verify is no longer the current step.
                 .foregroundStyle(isCurrent ? PanelAccent.verify : PanelAccent.verify.opacity(0.6))
             Text("Waiting for flash")

@@ -2,7 +2,7 @@
 /// privileged SMAppService root LaunchDaemon helper, communicated over an
 /// `NSXPCConnection`.
 ///
-/// Design summary (the load-bearing contract for M2):
+/// Design summary (the load-bearing XPC contract):
 ///
 ///   - XPC carries CONTROL data ONLY: a job request, progress callbacks, a
 ///     cancel signal, and a final result. Image bytes NEVER travel over XPC.

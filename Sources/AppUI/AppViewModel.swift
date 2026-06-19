@@ -1,10 +1,17 @@
-/// AppViewModel.swift - @Observable @MainActor state machine wiring the four
-/// USB-imager panels: source -> target -> flash -> verify.
+/// AppViewModel.swift - @Observable @MainActor presentation adapter wiring the
+/// four USB-imager panels: source -> target -> flash -> verify.
 ///
-/// All business logic lives here so SwiftUI views stay purely declarative.
-/// Dependencies (FlashEngine factory, KeychainStore, DiskEnumerator) are
-/// injected through the initializer so the view layer and unit tests can
-/// supply fakes without touching production types.
+/// The GUI-independent workflow (source stat, target filtering, checksum
+/// parse/match/cache, flash orchestration) lives once in `USBImagerCore`. This
+/// view model is a thin presentation layer: it calls the core services and maps
+/// their results onto `FlashState`/`FlashProgressSnapshot` for the SwiftUI views,
+/// owns the disk-event-to-UI binding, and enforces the user-gesture guards. No
+/// workflow logic is duplicated here.
+///
+/// Dependencies are injected through the initializers so the view layer and unit
+/// tests can supply fakes. The convenience initializers wire the real `Default*`
+/// core services; the full DI initializer accepts the service protocols directly
+/// so tests can override any single service with a fake.
 
 import DiskModel
 import FlashEngine
@@ -12,17 +19,19 @@ import Foundation
 import HelperProtocol
 import KeychainStore
 import Observation
+import USBImagerCore
 import Verifier
 
 // MARK: - AppViewModel
 
-/// Four-panel state machine for the USB imager.
+/// Four-panel presentation adapter for the USB imager.
 ///
 /// `@Observable` makes every stored property a potential publish point; the
 /// SwiftUI views access properties directly and update automatically.
 ///
 /// `@MainActor` ensures all state mutations happen on the main thread.
-/// Actor-isolated methods that need to await off-main work hop off and back.
+/// Core services that hop to other actors are awaited; results are applied back
+/// on the main actor.
 @MainActor
 @Observable
 public final class AppViewModel {
@@ -35,7 +44,7 @@ public final class AppViewModel {
     /// The disk image the user selected (set by `selectSource(_:)`).
     public private(set) var sourceURL: URL?
 
-    /// Byte length of the selected image file (stat'd at selection time).
+    /// Byte length of the selected image file (stat'd at selection time via core).
     /// Used as the denominator for safety-size filtering and progress math.
     public private(set) var sourceImageBytes: Int = 0
 
@@ -59,21 +68,28 @@ public final class AppViewModel {
     /// Validation error from the most recent `setOfficialChecksum` call.
     public private(set) var checksumInputError: String?
 
-    // MARK: - Private dependencies
+    // MARK: - Private dependencies (USBImagerCore services)
 
-    /// Factory that creates a fresh `FlashEngine` for each flash session.
-    /// Injected so tests can supply a fake engine.
-    private let makeEngine: @Sendable () -> FlashEngine
+    /// Stats the source image file (byte length). Wraps `FileManager` in core.
+    private let imageSourceService: ImageSourceService
 
-    /// Keychain-backed trusted-checksum cache.
-    private let keychainStore: KeychainStore
+    /// Filters disks to safe targets and formats display names. Wraps `DiskModel`
+    /// in core. Optional because the live snapshot needs an enumerator; the pure
+    /// filtering/display helpers still work when this is the default service.
+    private let diskTargetService: DiskTargetService
 
-    /// Live disk enumerator. Optional because `DiskEnumerator.init?()` can
-    /// fail in sandboxed environments.
+    /// Parse/validate checksums, match outcomes, and read/write the Keychain
+    /// trusted cache. Wraps `Verifier`/`KeychainStore` in core.
+    private let checksumService: ChecksumService
+
+    /// Drives a flash session and emits numeric progress. Wraps `FlashEngine`
+    /// in core. An actor; `flash`/`cancel` are awaited off the main actor.
+    private let flashService: FlashOrchestrationService
+
+    /// Live disk enumerator. Optional because `DiskEnumerator.init?()` can fail
+    /// in sandboxed environments. Retained only for the disk-event-to-UI binding;
+    /// the snapshot/filter pipeline runs through `diskTargetService`.
     private let diskEnumerator: DiskEnumerator?
-
-    /// The engine driving the current flash job. Retained for cancellation.
-    private var activeEngine: FlashEngine?
 
     /// Task driving the disk-event subscription loop.
     /// @ObservationIgnored + nonisolated(unsafe) lets deinit cancel the task
@@ -82,18 +98,19 @@ public final class AppViewModel {
     @ObservationIgnored
     nonisolated(unsafe) private var diskEventTask: Task<Void, Never>?
 
-    /// Phase start timestamp, reset on each `FlashProgress.phase` transition.
+    /// Phase start timestamp, reset on each progress phase transition.
     private var phaseStartDate: Date = Date()
 
-    /// The phase seen in the most recent progress event (to detect phase transitions).
-    private var lastSeenPhase: FlashPhase?
+    /// The phase seen in the most recent progress event (to detect transitions).
+    private var lastSeenPhase: FlashProgressData.Phase?
 
     // MARK: - Convenience production initializer
 
-    /// Create the view model wired to real production dependencies.
+    /// Create the view model wired to real production core services.
     ///
     /// A fresh `FlashEngine` is created for each flash session by the factory
-    /// closure; this keeps `FlashEngine` non-reusable as designed.
+    /// inside the core flash service; this keeps `FlashEngine` non-reusable as
+    /// designed.
     ///
     /// - Parameters:
     ///   - helperConnection: XPC connection to the privileged helper.
@@ -115,21 +132,71 @@ public final class AppViewModel {
         )
     }
 
-    // MARK: - Full dependency-injection initializer
+    // MARK: - Dependency-injection initializer (engine factory + keychain)
 
-    /// Full DI initializer used by tests and the production `convenience init`.
+    /// DI initializer used by the production `convenience init` and the existing
+    /// AppUI tests. It builds the four core services from the injected primitives
+    /// (an engine factory, a `KeychainStore`, and an optional `DiskEnumerator`),
+    /// then forwards to the service initializer. Keeping this signature unchanged
+    /// preserves the existing AppViewModelTests dependency-injection seam.
     ///
     /// - Parameters:
     ///   - makeEngine: closure that produces a fresh `FlashEngine` per job.
     ///   - keychainStore: trusted-checksum cache.
     ///   - diskEnumerator: live disk enumerator; pass `nil` to skip live events.
-    public init(
+    public convenience init(
         makeEngine: @escaping @Sendable () -> FlashEngine,
         keychainStore: KeychainStore = KeychainStore(),
         diskEnumerator: DiskEnumerator? = DiskEnumerator()
     ) {
-        self.makeEngine = makeEngine
-        self.keychainStore = keychainStore
+        // Wrap the engine factory in a core FlashEngineFactory so the core flash
+        // service owns the orchestration while tests keep their engine seam.
+        let engineFactory = ClosureFlashEngineFactory(factory: makeEngine)
+        let flashService = DefaultFlashOrchestrationService(engineFactory: engineFactory)
+        // The disk service needs an enumerator for the live snapshot; build it
+        // from the injected enumerator when present, else use a no-snapshot
+        // service so the pure filtering/display helpers stay available.
+        let diskService: DiskTargetService
+        if let enumerator = diskEnumerator {
+            diskService = DefaultDiskTargetService(enumerator: enumerator)
+        } else {
+            diskService = EmptyDiskTargetService()
+        }
+        self.init(
+            imageSourceService: DefaultImageSourceService(),
+            diskTargetService: diskService,
+            checksumService: DefaultChecksumService(keychainStore: keychainStore),
+            flashService: flashService,
+            diskEnumerator: diskEnumerator
+        )
+    }
+
+    // MARK: - Full service-injection initializer
+
+    /// Full DI initializer that accepts the core service protocols directly.
+    ///
+    /// Tests use this to override any single service with a fake while leaving the
+    /// others as the real `Default*` implementations. The `diskEnumerator` is kept
+    /// separate because the live event loop is a presentation concern owned here,
+    /// not a core service.
+    ///
+    /// - Parameters:
+    ///   - imageSourceService: stats the source image file.
+    ///   - diskTargetService: snapshots disks, filters safe targets, names disks.
+    ///   - checksumService: parse/validate/match checksums + Keychain cache.
+    ///   - flashService: drives a flash session, emits numeric progress.
+    ///   - diskEnumerator: live disk enumerator for the disk-event-to-UI binding.
+    public init(
+        imageSourceService: ImageSourceService = DefaultImageSourceService(),
+        diskTargetService: DiskTargetService,
+        checksumService: ChecksumService = DefaultChecksumService(),
+        flashService: FlashOrchestrationService,
+        diskEnumerator: DiskEnumerator? = DiskEnumerator()
+    ) {
+        self.imageSourceService = imageSourceService
+        self.diskTargetService = diskTargetService
+        self.checksumService = checksumService
+        self.flashService = flashService
         self.diskEnumerator = diskEnumerator
 
         // Kick off the initial snapshot + live event loop.
@@ -147,13 +214,24 @@ public final class AppViewModel {
 
     /// Set the source image URL.
     ///
-    /// Stats the file to get the byte length (used for target filtering and
-    /// as the advisory denominator). Resets target selection and available
-    /// targets, then refreshes the target list.
+    /// Stats the file through the core image-source service to get the byte
+    /// length (used for target filtering and as the advisory denominator). Resets
+    /// target selection, then refreshes the target list.
+    ///
+    /// A missing or unreadable file logs a clear line and leaves the view model
+    /// on step 1 (source unselected). Only a successful stat advances to step 2.
     ///
     /// - Parameter url: the file URL chosen by the user.
     public func selectSource(_ url: URL) async {
-        let byteLength = Self.statFileBytes(at: url)
+        // Stat the file directly; a missing/unreadable source stays on step 1.
+        let byteLength: Int
+        do {
+            byteLength = try imageSourceService.byteLength(of: url)
+        } catch {
+            // Source is missing or unreadable: stay on step 1 and log.
+            print("[AppViewModel] selectSource: source missing/unreadable: \(url.path); staying on step 1. \(error)")
+            return
+        }
         sourceURL = url
         sourceImageBytes = byteLength
         selectedTarget = nil
@@ -164,13 +242,12 @@ public final class AppViewModel {
 
     // MARK: - Public API: target management
 
-    /// Re-query the enumerator and re-apply DiskSafety filtering.
+    /// Re-query the disk service and re-apply DiskSafety filtering.
     ///
     /// Called automatically when the source changes or a DiskEvent fires.
     /// The SwiftUI views can also call this to force a refresh.
     public func refreshTargets() async {
-        guard let enumerator = diskEnumerator else { return }
-        let disks = await enumerator.snapshot()
+        let disks = await diskTargetService.snapshotDisks()
         updateTargetList(from: disks)
     }
 
@@ -184,7 +261,7 @@ public final class AppViewModel {
         guard let url = sourceURL else { return }
         let info = TargetInfo(
             disk: disk,
-            displayName: Self.displayName(for: disk)
+            displayName: diskTargetService.displayName(for: disk)
         )
         flashState = .targetSelected(sourceURL: url, target: info)
     }
@@ -195,6 +272,7 @@ public final class AppViewModel {
     ///
     /// Accepts either a pasted 128-hex-char string or a SHA512SUMS file body.
     /// Sets `expectedDigest` on success or `checksumInputError` on failure.
+    /// All parsing/validation is delegated to the core checksum service.
     ///
     /// - Parameter source: how the checksum was provided.
     public func setOfficialChecksum(_ source: OfficialChecksumSource) {
@@ -202,27 +280,21 @@ public final class AppViewModel {
         officialChecksumSource = source
         switch source {
         case .pastedHex(let hex):
-            // Validate and store the pasted hex string.
+            // Validate and store the pasted hex string via core.
             do {
-                let digest = try validatePastedHex(hex)
-                expectedDigest = digest
+                expectedDigest = try checksumService.validatePastedHex(hex)
             } catch {
                 expectedDigest = nil
                 checksumInputError = "Invalid checksum: must be exactly 128 hex characters."
             }
         case .sha512SumsFile(let body):
-            // Parse the file; match against the current source filename.
+            // Parse the file body and match against the current source filename via core.
+            let filename = sourceURL?.lastPathComponent ?? ""
             do {
-                let checksumFile = try ChecksumFile(sha512SumsBody: body)
-                let filename = sourceURL?.lastPathComponent ?? ""
-                let digest = try checksumFile.expectedDigest(for: filename)
-                expectedDigest = digest
-            } catch ChecksumFileError.filenameNotFound(let name) {
-                expectedDigest = nil
-                checksumInputError = "No entry for \"\(name)\" in the checksum file."
+                expectedDigest = try checksumService.expectedDigest(fromSums: body, matching: filename)
             } catch {
                 expectedDigest = nil
-                checksumInputError = "Could not parse checksum file: \(error.localizedDescription)"
+                checksumInputError = "Could not find a matching checksum entry for \"\(filename)\"."
             }
         }
     }
@@ -232,7 +304,7 @@ public final class AppViewModel {
     /// Reads the file body here (in the view model) so a read failure surfaces as
     /// a user-facing `checksumInputError` instead of being silently turned into an
     /// empty body by the view layer. On a successful read this delegates to
-    /// `setOfficialChecksum(.sha512SumsFile(body:))`, reusing the existing parse and
+    /// `setOfficialChecksum(.sha512SumsFile(body:))`, reusing the core parse and
     /// filename-match logic. Reading a small text file synchronously on the main
     /// actor is fine here.
     ///
@@ -248,7 +320,7 @@ public final class AppViewModel {
             checksumInputError = "Could not read the checksum file."
             return
         }
-        // Read succeeded; reuse the existing parse/match path.
+        // Read succeeded; reuse the core parse/match path.
         setOfficialChecksum(.sha512SumsFile(body: body))
     }
 
@@ -272,15 +344,13 @@ public final class AppViewModel {
 
     /// Begin the flash operation.
     ///
-    /// Only callable from `.confirming`. Drives the `FlashEngine`, consuming
-    /// its `progressStream`, updating `flashState` on each event, and
-    /// performing checksum + Keychain matching on completion.
+    /// Only callable from `.confirming`. Delegates the entire write/verify run to
+    /// the core flash orchestration service, mapping each numeric
+    /// `FlashProgressData` sample into a `FlashProgressSnapshot` for the UI and the
+    /// terminal `FlashRunResult` into the appropriate `FlashState`.
     public func startFlash() async {
         guard case .confirming(let sourceURL, _) = flashState else { return }
         guard let disk = selectedTarget else { return }
-
-        let engine = makeEngine()
-        activeEngine = engine
 
         // Pass the advisory SHA-512 to the helper for early UI sanity checks.
         // The helper re-hashes what it writes; this is not a safety gate.
@@ -289,56 +359,42 @@ public final class AppViewModel {
         // Advance to flashing state with an empty initial snapshot.
         phaseStartDate = Date()
         lastSeenPhase = nil
-        flashState = .flashing(snapshot: FlashProgressSnapshot.make(
-            from: FlashProgress(
-                jobID: JobID.generate(),
+        flashState = .flashing(snapshot: Self.snapshot(
+            from: FlashProgressData(
+                phase: .writing,
                 bytesDone: 0,
-                totalBytes: UInt64(max(0, sourceImageBytes)),
-                phase: .writing
+                totalBytes: UInt64(max(0, sourceImageBytes))
             ),
             phaseStart: phaseStartDate
         ))
 
-        // Subscribe to progress on a background task so the actor does not block.
-        let progressTask = Task { [weak self, weak engine] in
-            guard let engine else { return }
-            for await progress in await engine.progressStream {
-                self?.handleProgress(progress)
+        // The core service invokes `progress` on an arbitrary task; marshal each
+        // sample back onto the main actor before touching observable state.
+        let result = await flashService.flash(
+            source: sourceURL,
+            target: disk,
+            advisorySHA512: advisoryHex,
+            verifyReadBack: false,
+            progress: { [weak self] data in
+                Task { @MainActor in
+                    self?.handleProgress(data)
+                }
             }
-        }
+        )
 
-        do {
-            let result = try await engine.flash(
-                source: sourceURL,
-                target: disk,
-                advisorySHA512: advisoryHex
-            )
-            progressTask.cancel()
-            await handleFlashResult(result)
-        } catch let engineError as FlashEngineError {
-            progressTask.cancel()
-            handleFlashError(engineError)
-        } catch {
-            progressTask.cancel()
-            flashState = .failed(message: "Unexpected error: \(error.localizedDescription)")
-        }
-
-        activeEngine = nil
+        await handleFlashResult(result)
     }
 
     /// Cancel the active flash job.
     ///
-    /// Best-effort; the authoritative outcome still arrives via the engine's
-    /// result. Marks state `.cancelled` only after the engine confirms cancellation.
+    /// Best-effort; the authoritative outcome still arrives as a
+    /// `.failure(.cancelled)` from the originating `flash` call in `startFlash`.
     public func cancel() async {
-        guard let engine = activeEngine else { return }
-        await engine.cancel()
-        // State transitions to .cancelled via the error path in startFlash().
+        await flashService.cancel()
     }
 
     /// Reset the view model to `.idle` so the user can start a new session.
     public func reset() {
-        activeEngine = nil
         sourceURL = nil
         sourceImageBytes = 0
         selectedTarget = nil
@@ -352,144 +408,104 @@ public final class AppViewModel {
 
     // MARK: - Private: progress handling
 
-    /// Apply one progress event: update `flashState` with a fresh snapshot.
-    private func handleProgress(_ progress: FlashProgress) {
+    /// Apply one numeric progress sample: update `flashState` with a fresh
+    /// presentation snapshot.
+    private func handleProgress(_ data: FlashProgressData) {
+        // Progress samples are marshaled onto the main actor as fire-and-forget
+        // tasks, so a late sample can arrive after the run already resolved. Drop
+        // any sample once the session reached a terminal state so a stray
+        // `.flashing`/`.verifying` never overwrites `.succeeded`/`.failed`/`.cancelled`.
+        guard !flashState.isTerminal else { return }
         // Detect phase transitions and reset the speed clock.
-        if progress.phase != lastSeenPhase {
+        if data.phase != lastSeenPhase {
             phaseStartDate = Date()
-            lastSeenPhase = progress.phase
+            lastSeenPhase = data.phase
         }
-        let snapshot = FlashProgressSnapshot.make(
-            from: progress,
-            phaseStart: phaseStartDate
-        )
-        switch progress.phase {
-        case .unmounting, .writing:
+        let snapshot = Self.snapshot(from: data, phaseStart: phaseStartDate)
+        switch data.phase {
+        case .writing:
             flashState = .flashing(snapshot: snapshot)
-        case .verifying, .done:
+        case .verifying:
             flashState = .verifying(snapshot: snapshot)
         }
     }
 
     // MARK: - Private: result handling
 
-    /// Translate a successful `FlashResult` into the appropriate terminal state.
-    private func handleFlashResult(_ result: FlashResult) async {
-        switch result.outcome {
+    /// Translate a core `FlashRunResult` into the appropriate terminal state.
+    private func handleFlashResult(_ result: FlashRunResult) async {
+        switch result {
+        case .failure(let error):
+            applyFailure(error)
+        case .success(let deviceSHA512):
+            await applySuccess(deviceSHA512: deviceSHA512)
+        }
+    }
+
+    /// Map a typed `CoreError` failure onto the terminal presentation state.
+    private func applyFailure(_ error: CoreError) {
+        switch error {
         case .cancelled:
             flashState = .cancelled
-            return
-        case .failed:
-            let message = result.errorMessage ?? "The flash operation failed."
-            flashState = .failed(message: message)
-            return
-        case .success:
-            break
-        }
-
-        guard let deviceSHA512 = result.deviceSHA512 else {
-            flashState = .succeeded(
-                deviceSHA512: "",
-                matchOutcome: .noOfficialChecksum
+        case .verificationMismatch(let expected, let actual):
+            flashState = .failed(
+                message: "Verification mismatch: expected \(expected), got \(actual)."
             )
+        case .helperUnavailable(let message):
+            flashState = .failed(message: message)
+        case .flashFailed(let message):
+            flashState = .failed(message: message)
+        case .badInput(let message):
+            flashState = .failed(message: message)
+        case .appNotFound(let message):
+            flashState = .failed(message: message)
+        }
+    }
+
+    /// Resolve checksum/cache match for a successful write, offer to cache a
+    /// confirmed match, and advance to `.succeeded`.
+    private func applySuccess(deviceSHA512: String) async {
+        guard let deviceDigest = SHA512Digest(hexString: deviceSHA512) else {
+            // No usable device digest: report success with nothing to compare.
+            flashState = .succeeded(deviceSHA512: deviceSHA512, matchOutcome: .noOfficialChecksum)
             return
         }
 
-        let matchOutcome = await resolveMatchOutcome(deviceSHA512: deviceSHA512)
+        // Core resolves the outcome against the official digest then the cache.
+        let coreOutcome = checksumService.matchOutcome(
+            deviceDigest: deviceDigest,
+            officialDigest: expectedDigest,
+            imageByteLength: sourceImageBytes
+        )
+        let presentationOutcome = Self.presentationOutcome(for: coreOutcome)
 
-        // If the user supplied a checksum and it matches, offer to cache it.
-        if matchOutcome == .officialMatch {
-            await offerToSaveToKeychain(deviceSHA512: deviceSHA512)
+        // If the user supplied a checksum and it matched, cache it. The "offer to
+        // save" decision is the front end's; core only performs the storage.
+        if coreOutcome == .officialMatch {
+            saveTrustedChecksum(deviceDigest: deviceDigest)
         }
 
         flashState = .succeeded(
             deviceSHA512: deviceSHA512,
-            matchOutcome: matchOutcome
+            matchOutcome: presentationOutcome
         )
     }
 
-    /// Translate a `FlashEngineError` into the appropriate terminal state.
-    private func handleFlashError(_ error: FlashEngineError) {
-        switch error {
-        case .cancelled:
-            flashState = .cancelled
-        case .connectionFailed(let detail):
-            flashState = .failed(message: "Helper connection failed: \(detail)")
-        case .decodeFailed(let detail):
-            flashState = .failed(message: "Communication error (decode): \(detail)")
-        case .encodeFailed(let detail):
-            flashState = .failed(message: "Communication error (encode): \(detail)")
-        case .helperReportedFailure(let message):
-            let display = message ?? "The privileged helper reported a failure."
-            flashState = .failed(message: display)
-        case .jobIDMismatch(let expected, let received):
-            flashState = .failed(
-                message: "Internal protocol error: job ID mismatch (expected \(expected), got \(received))."
-            )
-        }
-    }
-
-    // MARK: - Private: checksum resolution
-
-    /// Compare `deviceSHA512` against the official expected digest and the
-    /// Keychain trusted-checksum cache.
+    /// Persist a confirmed checksum to the Keychain trusted cache via core.
     ///
-    /// Priority order:
-    ///   1. If an official checksum was supplied, compare to that.
-    ///   2. Otherwise, look up in the Keychain cache.
-    ///   3. If neither is available, return `.noOfficialChecksum`.
-    private func resolveMatchOutcome(deviceSHA512: String) async -> ChecksumMatchOutcome {
-        // Compare against the official expected digest if one was set.
-        if let expected = expectedDigest {
-            if let actualDigest = SHA512Digest(hexString: deviceSHA512) {
-                if expected == actualDigest {
-                    return .officialMatch
-                } else {
-                    return .officialMismatch
-                }
-            }
-        }
-
-        // No official checksum; check the Keychain trusted-checksum cache.
-        if let actualDigest = SHA512Digest(hexString: deviceSHA512) {
-            do {
-                let hit = try keychainStore.lookup(
-                    sha512: actualDigest,
-                    imageByteLength: sourceImageBytes
-                )
-                if hit != nil {
-                    return .trustedCacheHit
-                }
-            } catch {
-                // Keychain failure: treat as cache miss, not a fatal error.
-            }
-        }
-
-        return .noOfficialChecksum
-    }
-
-    /// Attempt to save a confirmed checksum to the Keychain trusted-checksum cache.
-    ///
-    /// Silently swallows duplicate-item errors (already cached is fine).
-    /// Other Keychain errors are also swallowed here because a cache write
-    /// failure is not a reason to mark the flash as failed.
-    private func offerToSaveToKeychain(deviceSHA512: String) async {
-        guard let digest = SHA512Digest(hexString: deviceSHA512) else { return }
+    /// A save failure is non-fatal: a cache write failure is not a reason to mark
+    /// the flash as failed, so any error is swallowed.
+    private func saveTrustedChecksum(deviceDigest: SHA512Digest) {
         guard sourceImageBytes > 0 else { return }
         let filename = sourceURL?.lastPathComponent ?? "unknown"
         let entry = TrustedChecksum(
-            sha512: digest,
+            sha512: deviceDigest,
             imageByteLength: sourceImageBytes,
             originalFilename: filename,
             sourceLabel: nil
         )
-        do {
-            try keychainStore.save(entry)
-        } catch KeychainError.duplicateItem {
-            // Already cached; no action needed.
-        } catch {
-            // Non-fatal: log in a real app; silently ignore here.
-        }
+        // Core swallows duplicate-item; other errors are non-fatal here.
+        try? checksumService.saveTrustedCache(entry)
     }
 
     // MARK: - Private: disk event loop
@@ -497,7 +513,8 @@ public final class AppViewModel {
     /// Start the long-running task that consumes `DiskEnumerator.events()`.
     ///
     /// Called once from `init` via a detached `Task`. The task runs until
-    /// the view model is deallocated (cancelled by `deinit`).
+    /// the view model is deallocated (cancelled by `deinit`). The disk-event-to-UI
+    /// binding is a presentation concern owned here, not in core.
     private func startDiskEventLoop() async {
         // Snapshot the initial disk list synchronously on the first call.
         await refreshTargets()
@@ -540,37 +557,120 @@ public final class AppViewModel {
         updateTargetList(from: allDisks)
     }
 
-    /// Re-apply DiskSafety filtering to `disks` and update `availableTargets`.
+    /// Re-apply DiskSafety filtering to `disks` via core and update `availableTargets`.
     private func updateTargetList(from disks: [DiskDescriptor]) {
         allDisks = disks
         // The source backing BSD name is nil when the source is a regular file.
-        // If the source URL lives directly on a disk device we would set this.
         // For MVP: source images are always files, so sourceBackingBSDName is nil.
         let sourceBackingBSDName: String? = nil
-        let safe = validTargets(
+        availableTargets = diskTargetService.validTargets(
             from: disks,
             imageSizeBytes: sourceImageBytes,
             sourceBackingBSDName: sourceBackingBSDName
         )
-        availableTargets = safe
     }
 
-    // MARK: - Private: helpers
+    // MARK: - Private: presentation mapping
 
-    /// Stat the file at `url` and return its byte length, or 0 on failure.
-    private static func statFileBytes(at url: URL) -> Int {
-        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let size = (attrs?[.size] as? Int) ?? 0
-        return size
-    }
-
-    /// Build a human-readable display name for a disk.
+    /// Map a core `ChecksumMatchOutcome` onto the GUI's presentation outcome.
     ///
-    /// Format: "<mediaName or busProtocol> <size> (<bsdName>)"
-    /// Example: "USB 32.0 GB (disk4)"
-    private static func displayName(for disk: DiskDescriptor) -> String {
-        let sizeStr = formatBytes(disk.sizeBytes)
-        let busLabel = disk.busProtocol.rawValue.uppercased()
-        return "\(busLabel) \(sizeStr) (\(disk.bsdName))"
+    /// The two enums are intentionally distinct: core's value is workflow-neutral,
+    /// the GUI's drives the Verify panel. This single mapping keeps the view layer
+    /// from touching the core type.
+    private static func presentationOutcome(
+        for outcome: USBImagerCore.ChecksumMatchOutcome
+    ) -> ChecksumMatchOutcome {
+        switch outcome {
+        case .officialMatch:
+            return .officialMatch
+        case .officialMismatch:
+            return .officialMismatch
+        case .trustedCacheHit:
+            return .trustedCacheHit
+        case .noOfficialChecksum:
+            return .noOfficialChecksum
+        }
+    }
+
+    /// Build a presentation `FlashProgressSnapshot` from a numeric core progress
+    /// sample plus the current phase-start timestamp.
+    ///
+    /// All display-string formatting (phase label, speed, transfer) lives in
+    /// `FlashProgressSnapshot`; this adapter only supplies the numbers and timing.
+    private static func snapshot(
+        from data: FlashProgressData,
+        phaseStart: Date
+    ) -> FlashProgressSnapshot {
+        FlashProgressSnapshot.make(from: data, phaseStart: phaseStart)
+    }
+}
+
+// MARK: - ClosureFlashEngineFactory
+
+/// Adapts a `@Sendable () -> FlashEngine` closure to the core `FlashEngineFactory`
+/// protocol so the existing engine-factory injection seam (used by the production
+/// `convenience init` and AppViewModelTests) drives the core flash service.
+///
+/// The closure never fails, so `makeEngine()` does not throw the helper-unavailable
+/// path here; production wires that path through the real `XPCHelperConnection`
+/// inside `USBImagerApp`.
+private struct ClosureFlashEngineFactory: FlashEngineFactory {
+
+    /// Produces a fresh engine per session.
+    let factory: @Sendable () -> FlashEngine
+
+    func makeEngine() throws -> FlashEngine {
+        factory()
+    }
+}
+
+// MARK: - EmptyDiskTargetService
+
+/// A `DiskTargetService` for the no-enumerator path (tests that pass
+/// `diskEnumerator: nil`, matching the prior behavior where `refreshTargets`
+/// returned early with no live snapshot).
+///
+/// `snapshotDisks()` returns an empty list, so `availableTargets` stays empty and
+/// `selectTarget`/`displayName` are never reached through the public flow. The
+/// pure `validTargets` filter still forwards to the same `DiskModel` free function
+/// the core service uses, so no safety logic is duplicated. `displayName` mirrors
+/// the core service's documented format for the unreachable case.
+/// File-scope wrapper naming the `DiskModel` `validTargets` free function so the
+/// `EmptyDiskTargetService.validTargets` method can forward to it without the bare
+/// call self-resolving to the protocol method.
+private func diskModelValidTargets(
+    from disks: [DiskDescriptor],
+    imageSizeBytes: Int,
+    sourceBackingBSDName: String?
+) -> [DiskDescriptor] {
+    // Forward to the DiskModel module-level free function.
+    return validTargets(from: disks, imageSizeBytes: imageSizeBytes, sourceBackingBSDName: sourceBackingBSDName)
+}
+
+private struct EmptyDiskTargetService: DiskTargetService {
+
+    func snapshotDisks() async -> [DiskDescriptor] {
+        []
+    }
+
+    func validTargets(
+        from disks: [DiskDescriptor],
+        imageSizeBytes: Int,
+        sourceBackingBSDName: String?
+    ) -> [DiskDescriptor] {
+        // Forward to the same DiskModel free function the core service delegates
+        // to, via a file-scope wrapper so the bare name does not self-resolve to
+        // this protocol method (infinite recursion).
+        diskModelValidTargets(
+            from: disks,
+            imageSizeBytes: imageSizeBytes,
+            sourceBackingBSDName: sourceBackingBSDName
+        )
+    }
+
+    func displayName(for disk: DiskDescriptor) -> String {
+        let gb = Double(disk.sizeBytes) / 1_000_000_000.0
+        let sizeString = String(format: "%.1f GB", gb)
+        return "\(disk.bsdName)  (\(disk.busProtocol.rawValue), \(sizeString))"
     }
 }

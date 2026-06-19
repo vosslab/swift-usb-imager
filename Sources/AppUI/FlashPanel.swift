@@ -69,9 +69,9 @@ struct FlashPanel: View {
     private var idleView: some View {
         // Loud icon only while Flash is the current step (step 3).
         let isCurrent = vm.flashState.currentStep == 3
-        return VStack(spacing: 8) {
+        return VStack(spacing: 12) {
             Image(systemName: "bolt.slash")
-                .font(.system(size: 34))
+                .font(.system(size: 64))
                 // Muted teal when Flash is no longer the current step.
                 .foregroundStyle(isCurrent ? PanelAccent.flash : PanelAccent.flash.opacity(0.6))
             Text("Select a target first")

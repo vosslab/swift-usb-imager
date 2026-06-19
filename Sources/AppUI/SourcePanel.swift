@@ -14,6 +14,12 @@ struct SourcePanel: View {
     /// Controls whether the file-picker sheet is presented.
     @State private var isImporterPresented = false
 
+    /// Offscreen documentation render flag. Read here only to darken the
+    /// "Choose Image" button fill so the doc-mode near-white label keeps strong
+    /// contrast; the interactive app (flag false) is unchanged. See
+    /// `StyleHelpers.swift` `CardSurfaceModifier`.
+    @Environment(\.documentationRender) private var documentationRender
+
     var body: some View {
         // Loud/focused highlight tracks the current step only, not enablement.
         let isCurrent = vm.flashState.currentStep == 1
@@ -37,6 +43,12 @@ struct SourcePanel: View {
             } label: {
                 Label("Choose Image", systemImage: "doc.badge.plus")
                     .frame(maxWidth: .infinity)
+                    // Documentation render only: paint a dark, near-opaque pill
+                    // behind the label so the doc-mode near-white text reads with
+                    // strong contrast instead of light-on-light-lavender. The
+                    // interactive app (flag false) adds no background and keeps the
+                    // unchanged .bordered glass fill.
+                    .modifier(DocButtonFillModifier(documentationRender: documentationRender))
             }
             .buttonStyle(.bordered)
             .disabled(!vm.flashState.canSelectSource)
@@ -58,9 +70,9 @@ struct SourcePanel: View {
     private var emptyPromptView: some View {
         // Loud icon only while Source is the current step (step 1).
         let isCurrent = vm.flashState.currentStep == 1
-        return VStack(spacing: 8) {
+        return VStack(spacing: 12) {
             Image(systemName: "externaldrive.badge.plus")
-                .font(.system(size: 38))
+                .font(.system(size: 64))
                 // Muted accent when Source is no longer the current step.
                 .foregroundStyle(isCurrent ? PanelAccent.source : PanelAccent.source.opacity(0.6))
             Text("No image selected")

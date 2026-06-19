@@ -2,6 +2,11 @@
 
 Prerequisites and build setup for swift-usb-imager.
 
+## Version
+
+Current release: **26.06.0** (CalVer 0Y.0M.PATCH). The canonical version is in the repo-root
+[VERSION](../VERSION) file; `usbimager --version` and the app Info.plist match it.
+
 ## Requirements
 
 - macOS 26 (Tahoe) or later

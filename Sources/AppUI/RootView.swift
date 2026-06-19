@@ -17,6 +17,12 @@ public struct RootView: View {
 
     @State private var vm: AppViewModel
 
+    /// Offscreen documentation render flag. When true, the shared
+    /// `GlassEffectContainer` backdrop is dropped (it does not rasterize through
+    /// `ImageRenderer` without a live window) and the panels draw as solid cards.
+    /// Default false keeps the interactive Liquid Glass app appearance unchanged.
+    @Environment(\.documentationRender) private var documentationRender
+
     public init(vm: AppViewModel) {
         _vm = State(initialValue: vm)
     }
@@ -49,33 +55,46 @@ public struct RootView: View {
             )
             .ignoresSafeArea()
 
-            GlassEffectContainer {
-                HStack(alignment: .top, spacing: PanelMetrics.panelSpacing) {
-                    SourcePanel(vm: vm)
-                        .frame(minWidth: PanelMetrics.panelMinWidth)
-
-                    panelDivider
-
-                    TargetPanel(vm: vm)
-                        .frame(minWidth: PanelMetrics.panelMinWidth)
-
-                    panelDivider
-
-                    FlashPanel(vm: vm)
-                        .frame(minWidth: PanelMetrics.panelMinWidth)
-
-                    panelDivider
-
-                    VerifyPanel(vm: vm)
-                        .frame(minWidth: PanelMetrics.panelMinWidth)
+            // Interactive app: share one Liquid Glass backdrop across panels.
+            // Documentation render: drop the container, which does not rasterize
+            // offscreen, and let the panels draw as solid cards instead.
+            if documentationRender {
+                panelStack
+            } else {
+                GlassEffectContainer {
+                    panelStack
                 }
-                .padding(PanelMetrics.panelSpacing)
             }
         }
         .frame(
             minWidth: PanelMetrics.windowMinWidth,
             minHeight: PanelMetrics.windowMinHeight
         )
+    }
+
+    /// The four panels side by side. Wrapped in a `GlassEffectContainer` for the
+    /// interactive app; drawn bare for offscreen documentation renders.
+    private var panelStack: some View {
+        HStack(alignment: .top, spacing: PanelMetrics.panelSpacing) {
+            SourcePanel(vm: vm)
+                .frame(minWidth: PanelMetrics.panelMinWidth)
+
+            panelDivider
+
+            TargetPanel(vm: vm)
+                .frame(minWidth: PanelMetrics.panelMinWidth)
+
+            panelDivider
+
+            FlashPanel(vm: vm)
+                .frame(minWidth: PanelMetrics.panelMinWidth)
+
+            panelDivider
+
+            VerifyPanel(vm: vm)
+                .frame(minWidth: PanelMetrics.panelMinWidth)
+        }
+        .padding(PanelMetrics.panelSpacing)
     }
 
     /// Subtle vertical divider between panels.

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>USBImagerApp</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.nsh.usbimager</string>
+	<key>CFBundleName</key>
+	<string>USBImagerApp</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>26.06.0</string>
+	<key>CFBundleVersion</key>
+	<string>26.06.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.nsh.usbimager.url</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>usbimager</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
