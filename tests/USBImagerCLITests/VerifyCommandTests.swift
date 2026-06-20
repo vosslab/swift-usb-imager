@@ -117,7 +117,7 @@ final class RecordingChecksumService: ChecksumService, @unchecked Sendable {
         deviceDigest: SHA512Digest,
         officialDigest: SHA512Digest?,
         imageByteLength: Int
-    ) -> ChecksumMatchOutcome { .noOfficialChecksum }
+    ) throws -> ChecksumMatchOutcome { .noOfficialChecksum }
 
     func lookupTrustedCache(digest: SHA512Digest, imageByteLength: Int) throws -> TrustedChecksum? { nil }
 
@@ -293,8 +293,9 @@ struct VerifyCommandOutcomeTests {
         )
 
         if case .failure(let error) = result {
+            // SeamSmokeTests owns the numeric exit-code table; the typed enum
+            // check above is the contract this test asserts.
             #expect(error.exitCode == .verificationMismatch)
-            #expect(error.exitCode.rawValue == 1)
         } else {
             Issue.record("Expected .failure(.verificationMismatch) for a digest mismatch.")
         }
@@ -349,8 +350,9 @@ struct VerifyCommandOutcomeTests {
         )
 
         if case .failure(let error) = result {
+            // SeamSmokeTests owns the numeric exit-code table; the typed enum
+            // check above is the contract this test asserts.
             #expect(error.exitCode == .verificationMismatch)
-            #expect(error.exitCode.rawValue == 1)
         } else {
             Issue.record("Expected .failure(.verificationMismatch) for a sums mismatch.")
         }
@@ -377,8 +379,9 @@ struct VerifyCommandBadInputTests {
         )
 
         if case .failure(let error) = result {
+            // SeamSmokeTests owns the numeric exit-code table; the typed enum
+            // check is the contract this test asserts.
             #expect(error.exitCode == .badInput)
-            #expect(error.exitCode.rawValue == 2)
         } else {
             Issue.record("Expected .failure(.badInput) for an unreadable image.")
         }
@@ -399,8 +402,9 @@ struct VerifyCommandBadInputTests {
         )
 
         if case .failure(let error) = result {
+            // SeamSmokeTests owns the numeric exit-code table; the typed enum
+            // check is the contract this test asserts.
             #expect(error.exitCode == .badInput)
-            #expect(error.exitCode.rawValue == 2)
         } else {
             Issue.record("Expected .failure(.badInput) for a malformed --sha512 value.")
         }
@@ -419,8 +423,9 @@ struct VerifyCommandBadInputTests {
         )
 
         if case .failure(let error) = result {
+            // SeamSmokeTests owns the numeric exit-code table; the typed enum
+            // check is the contract this test asserts.
             #expect(error.exitCode == .badInput)
-            #expect(error.exitCode.rawValue == 2)
         } else {
             Issue.record("Expected .failure(.badInput) for an unreadable sums file.")
         }
@@ -446,8 +451,9 @@ struct VerifyCommandBadInputTests {
         )
 
         if case .failure(let error) = result {
+            // SeamSmokeTests owns the numeric exit-code table; the typed enum
+            // check is the contract this test asserts.
             #expect(error.exitCode == .badInput)
-            #expect(error.exitCode.rawValue == 2)
         } else {
             Issue.record("Expected .failure(.badInput) for an unparsable sums file.")
         }

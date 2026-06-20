@@ -27,7 +27,6 @@
 /// plus a scratch USB device and is a documented manual run, not a unit test.
 
 import ArgumentParser
-import Dispatch
 import Foundation
 import USBImagerCore
 
@@ -198,32 +197,4 @@ extension FlashCommand {
         let line = "[\(phaseLabel)]\(percentPart) \(sample.bytesDone)/\(sample.totalBytes) bytes"
         return line
     }
-}
-
-// MARK: - runBlocking helper
-
-/// Block the calling thread until `body` completes and return its result.
-///
-/// `FlashCommand.run()` is synchronous (ArgumentParser's `run()` is not `async`).
-/// The core disk lookup and flash orchestration are `async` because they hop to
-/// the `DiskEnumerator` / `FlashEngine` actors. This helper bridges the boundary:
-/// spin up a detached task, wait on a semaphore, and forward the result.
-///
-/// Scope: private to this file; only `FlashCommand.run()` calls it.
-///
-/// - Parameter body: the async work to block on.
-/// - Returns: the value produced by `body`.
-private func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
-    let semaphore = DispatchSemaphore(value: 0)
-    // nonisolated(unsafe) is required because the value crosses the concurrency
-    // boundary via a semaphore rather than through Swift's structured concurrency.
-    // The semaphore guarantees the assignment happens-before the read below.
-    nonisolated(unsafe) var result: T? = nil
-    Task.detached {
-        result = await body()
-        semaphore.signal()
-    }
-    semaphore.wait()
-    // Force-unwrap is safe: `result` is set before `semaphore.signal()`.
-    return result!
 }

@@ -143,14 +143,35 @@ public struct DiskDescriptor: Sendable, Codable, Equatable, Hashable, Identifiab
     /// `"/Volumes/Untitled"`. Empty when nothing on the disk is mounted.
     public let mountPoints: [String]
 
+    /// The device vendor string as reported by DiskArbitration
+    /// (`kDADiskDescriptionDeviceVendorKey`), for example `"SanDisk"`.
+    ///
+    /// Empty string when the field is absent (virtual disks, some SD readers).
+    public let vendor: String
+
+    /// The device model string as reported by DiskArbitration
+    /// (`kDADiskDescriptionDeviceModelKey`), for example `"Ultra"`.
+    ///
+    /// Empty string when the field is absent.
+    public let model: String
+
+    /// The name of the first mounted volume on this disk, if any.
+    ///
+    /// Folded from the per-node `VolumeFact.volumeName` values by
+    /// `VolumeAttribution.attribute(facts:toWholeDisk:)`. Empty string when no
+    /// mounted volume on this disk carries a name.
+    public let volumeLabel: String
+
     /// Stable identity for SwiftUI / `Identifiable`; the BSD name is unique
     /// per whole disk for the lifetime of that device's attachment.
     public var id: String { bsdName }
 
     /// Designated initializer.
     ///
-    /// All fields are required so a descriptor can never silently default a
-    /// safety-relevant value (for example `carriesMacOSSystem`) to `false`.
+    /// Safety-relevant fields (`carriesMacOSSystem`, `carriesTimeMachine`, etc.)
+    /// have no default values so they can never be accidentally omitted.
+    /// Identity fields (`vendor`, `model`, `volumeLabel`) default to empty
+    /// string so existing call sites outside the enumerator compile unchanged.
     public init(
         bsdName: String,
         devicePath: String,
@@ -164,7 +185,10 @@ public struct DiskDescriptor: Sendable, Codable, Equatable, Hashable, Identifiab
         isSynthesized: Bool,
         carriesMacOSSystem: Bool,
         carriesTimeMachine: Bool,
-        mountPoints: [String]
+        mountPoints: [String],
+        vendor: String = "",
+        model: String = "",
+        volumeLabel: String = ""
     ) {
         self.bsdName = bsdName
         self.devicePath = devicePath
@@ -179,5 +203,8 @@ public struct DiskDescriptor: Sendable, Codable, Equatable, Hashable, Identifiab
         self.carriesMacOSSystem = carriesMacOSSystem
         self.carriesTimeMachine = carriesTimeMachine
         self.mountPoints = mountPoints
+        self.vendor = vendor
+        self.model = model
+        self.volumeLabel = volumeLabel
     }
 }

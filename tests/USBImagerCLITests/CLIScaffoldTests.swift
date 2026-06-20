@@ -36,7 +36,7 @@ struct FakeChecksumService: ChecksumService {
         deviceDigest: SHA512Digest,
         officialDigest: SHA512Digest?,
         imageByteLength: Int
-    ) -> ChecksumMatchOutcome { .noOfficialChecksum }
+    ) throws -> ChecksumMatchOutcome { .noOfficialChecksum }
     func lookupTrustedCache(digest: SHA512Digest, imageByteLength: Int) throws -> TrustedChecksum? { nil }
     func saveTrustedCache(_ checksum: TrustedChecksum) throws {}
 }
@@ -134,11 +134,11 @@ struct ServiceSeamTests {
     func liveFallback() {
         clearOverride()
         let resolved = Usbimager.services()
-        // The live image-source service is the real wrapper; we only assert the
-        // seam produced a non-fake by checking the live disk service is present
-        // or nil consistently (it is failable in CI without a disk session).
-        _ = resolved.diskTarget
-        #expect(Bool(true))
+        // Falsifiable contract: with no override, the seam must resolve the LIVE
+        // services, never a test fake. If the fallback path leaked an override
+        // (or the seam failed to clear), the resolved image source would be the
+        // FakeImageSourceService injected elsewhere; assert it is not.
+        #expect(!(resolved.imageSource is FakeImageSourceService))
     }
 }
 

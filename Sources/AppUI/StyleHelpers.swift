@@ -96,6 +96,14 @@ struct PanelCardModifier: ViewModifier {
 
     /// Offscreen documentation render flag; substitutes a solid card for glass.
     @Environment(\.documentationRender) private var documentationRender
+    /// Accessibility: when the user enables Reduce Transparency, also substitute
+    /// the opaque charcoal card path so blur/glass is not forced on users who
+    /// have requested reduced visual complexity.
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    /// True when the opaque-card path should be used instead of Liquid Glass.
+    /// Effective rule: opaque when documentationRender OR accessibilityReduceTransparency.
+    private var useOpaquePath: Bool { documentationRender || reduceTransparency }
 
     func body(content: Content) -> some View {
         content
@@ -106,9 +114,9 @@ struct PanelCardModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: PanelMetrics.cardCornerRadius, style: .continuous)
                     .fill(cardDepthFill)
             }
-            // Card surface: documentation renders use a solid opaque fill that
-            // rasterizes offscreen; the interactive app uses true Liquid Glass.
-            .modifier(CardSurfaceModifier(documentationRender: documentationRender))
+            // Card surface: opaque path when documentationRender or accessibilityReduceTransparency;
+            // true Liquid Glass otherwise (interactive app default, a11y off).
+            .modifier(CardSurfaceModifier(useOpaquePath: useOpaquePath))
             // Step-hue surface tint: loud when active, subdued (same hue) when inactive.
             .overlay {
                 RoundedRectangle(cornerRadius: PanelMetrics.cardCornerRadius, style: .continuous)
@@ -118,7 +126,7 @@ struct PanelCardModifier: ViewModifier {
             // Rim: strong step hue when active, faint step hue when inactive.
             .overlay {
                 RoundedRectangle(cornerRadius: PanelMetrics.cardCornerRadius, style: .continuous)
-                    .stroke((tint ?? .clear).opacity(rimOpacity), lineWidth: documentationRender ? 1.5 : 1)
+                    .stroke((tint ?? .clear).opacity(rimOpacity), lineWidth: useOpaquePath ? 1.5 : 1)
             }
             // Lift: colored glow when active, plain grounding shadow when inactive.
             .shadow(color: isActive ? (tint ?? .clear).opacity(0.28) : Color.black.opacity(0.22), radius: isActive ? 28 : 10, x: 0, y: isActive ? 12 : 5)
@@ -129,13 +137,13 @@ struct PanelCardModifier: ViewModifier {
     /// Fill drawn behind the card surface.
     ///
     /// In the interactive app this is a translucent charcoal that gives the
-    /// Liquid Glass body. In documentation render it is an OPAQUE charcoal so the
-    /// card is a solid DARK surface the offscreen rasterizer can draw LIGHT text
-    /// over. The card stays dark (dark mode); legibility comes from promoting the
-    /// panel text/icon foregrounds to a near-white high-contrast tone in this mode
-    /// (see `CardSurfaceModifier`), not from lightening the card.
+    /// Liquid Glass body. In the opaque path (documentationRender or
+    /// accessibilityReduceTransparency) it is an OPAQUE charcoal so the card is a
+    /// solid DARK surface with legible light text. The card stays dark (dark mode);
+    /// legibility comes from promoting the panel text/icon foregrounds to a
+    /// near-white high-contrast tone (see `CardSurfaceModifier`).
     private var cardDepthFill: Color {
-        if documentationRender {
+        if useOpaquePath {
             // Opaque charcoal card; inactive a touch darker for grounding.
             return isActive
                 ? Color(red: 0.12, green: 0.12, blue: 0.14)
@@ -146,50 +154,52 @@ struct PanelCardModifier: ViewModifier {
     }
 
     /// Step-hue surface tint opacity. The interactive app keeps its original
-    /// values (0.30 active / 0.07 inactive). Documentation mode keeps the same
+    /// values (0.30 active / 0.07 inactive). The opaque path keeps the same
     /// active/inactive split so step 2 still reads loud-blue and idle Source reads
     /// quiet-purple over the dark card.
     private var tintFillOpacity: Double {
-        if documentationRender {
-            return isActive ? 0.30 : 0.07
-        }
+        // Same values for both paths; property retained for future per-path tuning.
         return isActive ? 0.30 : 0.07
     }
 
-    /// Rim opacity. Documentation mode uses a slightly stronger rim (drawn at a
+    /// Rim opacity. The opaque path uses a slightly stronger rim (drawn at a
     /// thicker line width) so the step hue stays recognizable around the dark
     /// card edge.
     private var rimOpacity: Double {
-        if documentationRender {
+        if useOpaquePath {
             return isActive ? 0.70 : 0.22
         }
         return isActive ? 0.60 : 0.14
     }
 }
 
-/// Draws the card surface: the true Liquid Glass material for the interactive
-/// app, or nothing extra for documentation renders (the opaque depth fill is the
-/// surface in that mode). Split into its own modifier so the `.glassEffect` call
-/// is conditional without breaking the opaque `some View` body type.
+/// Draws the card surface: the true Liquid Glass material when the default glass
+/// path is active, or the opaque charcoal path when documentationRender or
+/// accessibilityReduceTransparency is on. Split into its own modifier so the
+/// `.glassEffect` call is conditional without breaking the opaque `some View`
+/// body type.
 private struct CardSurfaceModifier: ViewModifier {
-    let documentationRender: Bool
+    /// True when the opaque-card path should be used (documentationRender OR
+    /// accessibilityReduceTransparency); false for the default Liquid Glass path.
+    let useOpaquePath: Bool
 
     func body(content: Content) -> some View {
-        if documentationRender {
+        if useOpaquePath {
             // No glass material: the opaque DARK depth fill already is the
-            // surface, so the rendered text and icons rasterize offscreen. The
-            // card stays dark; legibility comes from promoting the foreground
-            // hierarchy to a near-white high-contrast tone. The three-argument
-            // `foregroundStyle` redefines what `.primary`/`.secondary`/`.tertiary`
-            // resolve to for ALL descendant labels, so every panel's faint
-            // `.foregroundStyle(.secondary)` header and body label renders as
-            // bright light text on the dark card without editing the panel views.
-            // `.colorScheme(.dark)` keeps any control chrome resolving for dark.
+            // surface. The three-argument `foregroundStyle` redefines what
+            // `.primary`/`.secondary`/`.tertiary` resolve to for ALL descendant
+            // labels, so every panel's faint `.foregroundStyle(.secondary)` header
+            // and body label renders as bright light text on the dark card without
+            // editing the panel views. `.colorScheme(.dark)` keeps any control
+            // chrome resolving for dark.
+            // This path is used both by the offscreen documentation render harness
+            // (documentationRender=true) and by users who have enabled the macOS
+            // "Reduce Transparency" accessibility setting.
             content
                 .foregroundStyle(.white, Color.white.opacity(0.82), Color.white.opacity(0.62))
                 .colorScheme(.dark)
         } else {
-            // True system Liquid Glass surface (interactive app, unchanged).
+            // True system Liquid Glass surface (interactive app default, a11y off, unchanged).
             content
                 .glassEffect(.regular, in: .rect(cornerRadius: PanelMetrics.cardCornerRadius))
         }
@@ -263,6 +273,41 @@ struct PanelHeader: View {
                 .foregroundStyle(active ? .primary : .secondary)
             Spacer()
         }
+    }
+}
+
+// MARK: - Error badge
+
+/// High-contrast inset that renders a `CoreError` message over any glass panel.
+///
+/// Bare colored caption text over glass loses contrast; the dense inset preserves
+/// legibility. This view
+/// is used by SourcePanel, TargetPanel, and VerifyPanel so each panel renders
+/// `currentError` with the same vocabulary and no per-panel copy of the styling.
+///
+/// The badge is visible only when `error` is non-nil; callers should still guard
+/// against nil so the layout collapses cleanly (using `if let` before calling).
+struct ErrorBadge: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            // Icon: exclamationmark on a solid fill, no dependency on glass refraction.
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+            // Message text: white on the dark fill, stays legible over any glass.
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        // Dense near-opaque red-tinted fill gives the badge body over the glass.
+        // Opacity 0.82 on a pure red reads as a saturated inset without looking
+        // fully opaque, keeping a light connection to the glass identity underneath.
+        .background(Color.red.opacity(0.82), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

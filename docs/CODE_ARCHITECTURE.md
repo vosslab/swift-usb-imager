@@ -139,6 +139,8 @@ SecCode peer pinning (CodeSigningRequirement) and an AuthorizationRef right.
 | PrivilegedHelper | Library | Helper | HelperService NSObject (HelperXPCProtocol); HelperAuthorization (pluggable, stub today); HelperSafety independent re-check; Unmount (diskutil + eject); WriteJob (raw block-aligned write, F_NOCACHE, DKIOCGETBLOCKSIZE); VerifyJob (read-back SHA-512); CancellationToken; BlockMath; HelperErrors |
 | USBImagerCLI | Executable ("usbimager") | App | Thin terminal CLI. Subcommands: `list`, `verify`, `flash`, `open`. CoreServices injectable seam (test override via `Usbimager.servicesOverride`). Shared exit path maps CoreError -> CoreExitCode -> process status. Depends on USBImagerCore + ArgumentParser only; no direct FlashEngine/DiskModel/AppUI imports. |
 | USBImagerShots | Executable | App | Offscreen screenshot render harness. Builds AppViewModel with injected fake services; renders RootView to PNG via ImageRenderer with `documentationRender = true` (solid card, no Liquid Glass); sets `NSApplication.activationPolicy(.prohibited)` (no visible window). Depends on AppUI, USBImagerCore, DiskModel. |
+| AuthopenProbeCore | Library | n/a (spike) | NON-PRODUCTION research spike. Pure (hardware-free) authopen preflight decision logic; fixture-tested by AuthopenProbeCoreTests. Not imported by any app/CLI/helper target. See the spike callout below. |
+| authopen_fd_probe | Executable | n/a (spike) | NON-PRODUCTION research spike under `tools/authopen_fd_probe/`. Standalone SCM_RIGHTS fd-passing harness (`selftest` mode); depends only on AuthopenProbeCore. Not wired into the flash path. |
 
 ---
 
@@ -206,3 +208,21 @@ no subcommand invents its own numbers.
 - Real SecCode + AuthorizationRef peer pinning in HelperAuthorization (stub allows all callers).
 - File-descriptor and staged-copy SourceAccess variants (SourceAccess enum shape is final;
   only .absolutePath executes today).
+
+---
+
+## Research spike: authopen raw-disk-write investigation (NON-PRODUCTION)
+
+`AuthopenProbeCore` (library) and `authopen_fd_probe` (executable, under
+`tools/authopen_fd_probe/`), plus their `AuthopenProbeCoreTests` target, are
+research/spike targets for the authopen raw-disk-write investigation. They are
+NOT part of the shipping flash path: no production target imports them, and the
+flash data flow above does not touch them.
+
+The spike evaluates a least-persistent privileged backend (authopen over
+SCM_RIGHTS) for opening one `/dev/rdiskN` for writing, as an alternative to the
+SMAppService LaunchDaemon. `AuthopenProbeCore` holds the pure, hardware-free
+preflight decision logic so its accept/refuse behavior can be unit-tested against
+saved fixtures with no real USB. The verdict is PENDING a hardware run; until then
+no production code commits to a backend. See the decision record at
+[active_plans/decisions/raw_disk_write_model.md](active_plans/decisions/raw_disk_write_model.md).

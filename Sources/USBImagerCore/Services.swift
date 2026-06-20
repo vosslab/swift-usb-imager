@@ -94,17 +94,24 @@ public protocol ChecksumService: Sendable {
     /// Priority order (fixed): an official digest, then the Keychain trusted
     /// cache, then `noOfficialChecksum`.
     ///
+    /// A genuine Keychain access failure during the cache probe is NOT a cache
+    /// miss: it throws so the caller can surface the real error rather than
+    /// silently downgrading the verdict to `noOfficialChecksum`. A true miss
+    /// (the digest is simply not cached) still resolves to `noOfficialChecksum`.
+    ///
     /// - Parameters:
     ///   - deviceDigest: the digest to evaluate.
     ///   - officialDigest: the user-supplied expected digest, or `nil`.
     ///   - imageByteLength: the source image byte length, used as the cache key
     ///     alongside the digest.
     /// - Returns: the resolved `ChecksumMatchOutcome`.
+    /// - Throws: `CoreError.badInput` when the Keychain cache probe fails for a
+    ///   reason other than a true miss.
     func matchOutcome(
         deviceDigest: SHA512Digest,
         officialDigest: SHA512Digest?,
         imageByteLength: Int
-    ) -> ChecksumMatchOutcome
+    ) throws -> ChecksumMatchOutcome
 
     /// Look up a trusted checksum in the Keychain cache.
     ///

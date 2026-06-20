@@ -13,11 +13,13 @@
 ///   - kDADiskDescriptionMediaEjectableKey  -> isEjectable
 ///   - kDADiskDescriptionDeviceInternalKey  -> isInternal
 ///   - kDADiskDescriptionDeviceProtocolKey  -> busProtocol
+///   - kDADiskDescriptionDeviceVendorKey    -> vendor
+///   - kDADiskDescriptionDeviceModelKey     -> model
 ///   - kDADiskDescriptionMediaWritableKey   -> isWritable
 ///   - kDADiskDescriptionMediaWholeKey      -> whole-disk filter (with name shape)
 ///   - kDADiskDescriptionVolumeKindKey + "synthesized" media path -> isSynthesized
 ///   - kDADiskDescriptionVolumePathKey      -> mountPoints (per volume node)
-///   - kDADiskDescriptionVolumeNameKey / volume path -> macOS-system + Time Machine
+///   - kDADiskDescriptionVolumeNameKey / volume path -> macOS-system + Time Machine + volumeLabel
 ///
 /// macOS-system detection: a volume mounted at "/" (the live system root) marks
 /// its physical parent disk as `carriesMacOSSystem`. Time Machine detection: a
@@ -249,6 +251,9 @@ public actor DiskEnumerator {
         // protocol (APFS synthesized containers carry the "Virtual Interface").
         let isSynthesized = (busProtocol == .virtual)
             || protocolString.lowercased().contains("virtual")
+        // Human-identity strings: vendor and model from the device description.
+        let vendor = stringValue(description, kDADiskDescriptionDeviceVendorKey)
+        let model = stringValue(description, kDADiskDescriptionDeviceModelKey)
         // Fold every volume fact for this disk onto the physical parent.
         let attributed = VolumeAttribution.attribute(facts: facts, toWholeDisk: bsdName)
         let descriptor = DiskDescriptor(
@@ -264,7 +269,10 @@ public actor DiskEnumerator {
             isSynthesized: isSynthesized,
             carriesMacOSSystem: attributed.carriesMacOSSystem,
             carriesTimeMachine: attributed.carriesTimeMachine,
-            mountPoints: attributed.mountPoints
+            mountPoints: attributed.mountPoints,
+            vendor: vendor,
+            model: model,
+            volumeLabel: attributed.volumeLabel
         )
         return descriptor
     }
@@ -307,6 +315,7 @@ public actor DiskEnumerator {
             let fact = VolumeFact(
                 bsdName: bsdName,
                 mountPoint: mountPoint,
+                volumeName: volumeName,
                 isMacOSSystem: isSystem,
                 isTimeMachine: isTimeMachine
             )

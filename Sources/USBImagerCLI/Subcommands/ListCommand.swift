@@ -65,31 +65,3 @@ struct ListCommand: ParsableCommand {
         }
     }
 }
-
-// MARK: - runBlocking helper
-
-/// Block the calling thread until `body` completes and return its result.
-///
-/// `ListCommand.run()` is synchronous (ArgumentParser's `run()` is not `async`).
-/// The core snapshot is `async` because it hops to the `DiskEnumerator` actor.
-/// This helper bridges the boundary with the minimum overhead: spin up a detached
-/// task, wait on a semaphore, and forward the result.
-///
-/// Scope: private to this file; only `ListCommand.run()` calls it.
-///
-/// - Parameter body: the async work to block on.
-/// - Returns: the value produced by `body`.
-private func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
-    let semaphore = DispatchSemaphore(value: 0)
-    // nonisolated(unsafe) is required because the value crosses the concurrency
-    // boundary via a semaphore rather than through Swift's structured concurrency.
-    // The semaphore guarantees the assignment happens-before the read below.
-    nonisolated(unsafe) var result: T? = nil
-    Task.detached {
-        result = await body()
-        semaphore.signal()
-    }
-    semaphore.wait()
-    // Force-unwrap is safe: `result` is set before `semaphore.signal()`.
-    return result!
-}

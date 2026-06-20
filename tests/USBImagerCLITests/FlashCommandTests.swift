@@ -235,28 +235,24 @@ struct FlashCommandExitCodeTests {
     func helperUnavailableExitsThree() {
         let code = exitCode(for: .failure(error: .helperUnavailable(message: "no helper")))
         #expect(code == .helperUnavailable)
-        #expect(code.rawValue == 3)
     }
 
     @Test("verificationMismatch maps to exit 1")
     func verificationMismatchExitsOne() {
         let code = exitCode(for: .failure(error: .verificationMismatch(expected: "a", actual: "b")))
         #expect(code == .verificationMismatch)
-        #expect(code.rawValue == 1)
     }
 
     @Test("flashFailed maps to exit 4")
     func flashFailedExitsFour() {
         let code = exitCode(for: .failure(error: .flashFailed(message: "io error")))
         #expect(code == .flashFailed)
-        #expect(code.rawValue == 4)
     }
 
     @Test("cancelled maps to exit 5")
     func cancelledExitsFive() {
         let code = exitCode(for: .failure(error: .cancelled))
         #expect(code == .cancelled)
-        #expect(code.rawValue == 5)
     }
 }
 
@@ -281,8 +277,9 @@ struct FlashCommandBadInputTests {
 
         #expect(fake.flashCallCount == 0)
         if case .failure(let error) = result {
+            // SeamSmokeTests owns the numeric exit-code table; the typed enum
+            // check is the contract this test asserts.
             #expect(error.exitCode == .badInput)
-            #expect(error.exitCode.rawValue == 2)
         } else {
             Issue.record("Expected a badInput failure for an unknown target.")
         }

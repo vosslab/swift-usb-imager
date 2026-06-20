@@ -65,3 +65,29 @@ struct CoreErrorExitCodeTests {
         #expect(CoreExitCode.appNotFound.rawValue == 6)
     }
 }
+
+// MARK: - CoreError domain mapping
+
+@Suite("CoreError panel-domain mapping")
+struct CoreErrorDomainTests {
+
+    @Test("Each error maps to its panel domain")
+    func domainMapping() {
+        // Contract source of truth: CoreError.domain in
+        // Sources/USBImagerCore/CoreError.swift. When a CoreError-to-panel mapping
+        // changes there, update this table to match (or fix the code if the panel
+        // routing regressed); this test is the lock on that mapping.
+        // Source domain: file-stat failures from selectSource.
+        #expect(CoreError.badInput(message: "x").domain == .source)
+        // Source domain: CLI-only case maps to source as the closest concept.
+        #expect(CoreError.appNotFound(message: "x").domain == .source)
+        // Target domain: helper unavailable means the flash write cannot start.
+        #expect(CoreError.helperUnavailable(message: "x").domain == .target)
+        // Target domain: a flash-write failure belongs to the target disk.
+        #expect(CoreError.flashFailed(message: "x").domain == .target)
+        // Verify domain: digest mismatch surfaces in the Verify panel.
+        #expect(CoreError.verificationMismatch(expected: "a", actual: "b").domain == .verify)
+        // Verify domain: cancellation resolves in the Verify panel's terminal state.
+        #expect(CoreError.cancelled.domain == .verify)
+    }
+}

@@ -4,6 +4,17 @@
 /// Once selected, the filename and size are displayed inside the card.
 
 import SwiftUI
+import UniformTypeIdentifiers
+import USBImagerCore
+
+// MARK: - Allowed import content types
+//
+// The file importer accepts raw disk images by extension. UTType(filenameExtension:)
+// is Optional, so resolve each once at file scope with a guarded fallback to .data
+// instead of force-unwrapping inline. A nil result would otherwise crash the importer;
+// .data keeps the picker functional even if the type cannot be resolved.
+private let isoContentType = UTType(filenameExtension: "iso") ?? .data
+private let imgContentType = UTType(filenameExtension: "img") ?? .data
 
 // MARK: - SourcePanel
 
@@ -35,6 +46,13 @@ struct SourcePanel: View {
                 emptyPromptView
             }
 
+            // Error badge: visible only for source-domain errors (file-stat failures
+            // from selectSource). Errors belonging to Target or Verify are suppressed
+            // here so a source error never appears mislabeled in the wrong panel.
+            if let error = vm.currentError, error.domain == .source {
+                ErrorBadge(message: userMessage(for: error))
+            }
+
             Spacer(minLength: 0)
 
             // Open file picker button
@@ -54,8 +72,7 @@ struct SourcePanel: View {
             .disabled(!vm.flashState.canSelectSource)
             .fileImporter(
                 isPresented: $isImporterPresented,
-                allowedContentTypes: [.init(filenameExtension: "iso")!,
-                                      .init(filenameExtension: "img")!],
+                allowedContentTypes: [isoContentType, imgContentType],
                 allowsMultipleSelection: false
             ) { result in
                 guard case .success(let urls) = result, let url = urls.first else { return }

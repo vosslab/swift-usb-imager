@@ -7,7 +7,6 @@
 
 import DiskModel
 import Foundation
-import HelperProtocol
 import USBImagerCore
 
 // MARK: - OfficialChecksumSource
@@ -64,45 +63,6 @@ public struct FlashProgressSnapshot: Sendable, Equatable {
 
     // MARK: - Construction
 
-    /// Build a snapshot from a raw `FlashProgress` value plus timing context.
-    ///
-    /// - Parameters:
-    ///   - progress: the raw progress event from the helper.
-    ///   - startDate: wall-clock time when the current phase began.
-    ///   - now: current wall-clock time (injectable for tests).
-    public static func make(
-        from progress: FlashProgress,
-        phaseStart: Date,
-        now: Date = Date()
-    ) -> FlashProgressSnapshot {
-        let total = progress.totalBytes
-        let done = progress.bytesDone
-        let fraction: Double
-        if total > 0 {
-            fraction = min(1.0, Double(done) / Double(total))
-        } else {
-            fraction = 0
-        }
-        let elapsed = now.timeIntervalSince(phaseStart)
-        let speedLabel: String
-        if elapsed > 0 && done > 0 {
-            let bytesPerSecond = Double(done) / elapsed
-            speedLabel = formatBytes(UInt64(bytesPerSecond)) + "/s"
-        } else {
-            speedLabel = ""
-        }
-        let phaseLabel = Self.label(for: progress.phase)
-        let transferLabel = formatBytes(done) + " / " + formatBytes(total)
-        return FlashProgressSnapshot(
-            fraction: fraction,
-            bytesDone: done,
-            totalBytes: total,
-            phaseLabel: phaseLabel,
-            speedLabel: speedLabel,
-            transferLabel: transferLabel
-        )
-    }
-
     /// Build a snapshot from a numeric core `FlashProgressData` value plus timing.
     ///
     /// This is the path used by `AppViewModel` once the workflow moved to
@@ -157,20 +117,6 @@ public struct FlashProgressSnapshot: Sendable, Equatable {
             return "Writing"
         case .verifying:
             return "Verifying"
-        }
-    }
-
-    /// Human-readable phase label suitable for a progress heading.
-    private static func label(for phase: FlashPhase) -> String {
-        switch phase {
-        case .unmounting:
-            return "Unmounting"
-        case .writing:
-            return "Writing"
-        case .verifying:
-            return "Verifying"
-        case .done:
-            return "Done"
         }
     }
 }

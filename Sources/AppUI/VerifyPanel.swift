@@ -8,6 +8,7 @@
 /// "Start over" resets the view model to .idle via `vm.reset()`.
 
 import SwiftUI
+import USBImagerCore
 
 // MARK: - VerifyPanel
 
@@ -34,6 +35,13 @@ struct VerifyPanel: View {
                 cancelledView
             default:
                 waitingView
+            }
+
+            // Error badge: visible only for verify-domain errors (digest mismatch,
+            // cancellation). Source and Target domain errors are suppressed here so
+            // only contextually relevant errors appear in this panel.
+            if let error = vm.currentError, error.domain == .verify {
+                ErrorBadge(message: userMessage(for: error))
             }
 
             Spacer(minLength: 0)

@@ -55,18 +55,23 @@ private struct FixedByteLengthImageSourceService: ImageSourceService {
     }
 }
 
-// MARK: - Fixture disk target fake
+// MARK: - Throwing image source fake
 
-/// File-scope wrapper naming the `DiskModel` `validTargets` free function so the
-/// `DiskTargetService.validTargets` method below can forward to it without the
-/// bare call self-resolving to the protocol method (infinite recursion).
-private func diskModelValidTargets(
-    from disks: [DiskDescriptor],
-    imageSizeBytes: Int,
-    sourceBackingBSDName: String?
-) -> [DiskDescriptor] {
-    validTargets(from: disks, imageSizeBytes: imageSizeBytes, sourceBackingBSDName: sourceBackingBSDName)
+/// An `ImageSourceService` that always throws `CoreError.badInput` so the harness
+/// can drive `selectSource` into the error path and render the error-badge state.
+///
+/// Used only for the error-state screenshot; the normal scenes use
+/// `FixedByteLengthImageSourceService` which always succeeds.
+private struct ThrowingImageSourceService: ImageSourceService {
+
+    func byteLength(of url: URL) throws -> Int {
+        throw CoreError.badInput(
+            message: "Could not read the source image: the file does not exist or is not readable."
+        )
+    }
 }
+
+// MARK: - Fixture disk target fake
 
 /// A `DiskTargetService` that returns a fixed disk list and forwards filtering to
 /// the real `DiskModel` safety rules, so the rendered step-2 image reflects the
@@ -85,7 +90,7 @@ private struct FixtureDiskTargetService: DiskTargetService {
         imageSizeBytes: Int,
         sourceBackingBSDName: String?
     ) -> [DiskDescriptor] {
-        // Use the real DiskModel safety filter via the file-scope wrapper.
+        // Use the real DiskModel safety filter via the module-level alias.
         diskModelValidTargets(
             from: disks,
             imageSizeBytes: imageSizeBytes,
@@ -94,9 +99,8 @@ private struct FixtureDiskTargetService: DiskTargetService {
     }
 
     func displayName(for disk: DiskDescriptor) -> String {
-        let gb = Double(disk.sizeBytes) / 1_000_000_000.0
-        let sizeString = String(format: "%.1f GB", gb)
-        return "\(disk.bsdName)  (\(disk.busProtocol.rawValue), \(sizeString))"
+        // Forward to the one canonical DiskModel formatter shared with the core service.
+        diskDisplayName(for: disk)
     }
 }
 
@@ -127,6 +131,10 @@ private actor NoopFlashOrchestrationService: FlashOrchestrationService {
 /// Machine volume, so it passes `DiskModel.validTargets` for the small fixture
 /// source. Sized at 32 GB to read as a typical flash drive in the rendered row.
 private func makeFixtureUSBDisk() -> DiskDescriptor {
+    // Realistic fixture data: vendor + model so the screenshot renders the
+    // human-identity primary label ("SanDisk Ultra 32.0 GB") rather than a
+    // bare BSD name.  The volume label "UNTITLED" represents an unformatted
+    // flash drive, matching a common real-world target.
     DiskDescriptor(
         bsdName: "disk4",
         devicePath: "/dev/disk4",
@@ -140,7 +148,10 @@ private func makeFixtureUSBDisk() -> DiskDescriptor {
         isSynthesized: false,
         carriesMacOSSystem: false,
         carriesTimeMachine: false,
-        mountPoints: []
+        mountPoints: ["/Volumes/UNTITLED"],
+        vendor: "SanDisk",
+        model: "Ultra",
+        volumeLabel: "UNTITLED"
     )
 }
 
@@ -152,6 +163,21 @@ private func makeFixtureUSBDisk() -> DiskDescriptor {
 private func makeFixtureViewModel() -> AppViewModel {
     AppViewModel(
         imageSourceService: FixedByteLengthImageSourceService(length: 4 * 1024 * 1024 * 1024),
+        diskTargetService: FixtureDiskTargetService(disks: [makeFixtureUSBDisk()]),
+        checksumService: DefaultChecksumService(),
+        flashService: NoopFlashOrchestrationService(),
+        diskEnumerator: nil
+    )
+}
+
+/// Build an `AppViewModel` wired to the throwing image-source fake so that
+/// `selectSource` sets `currentError`, driving the error-badge state.
+///
+/// Used exclusively for the error-state screenshot scene.
+@MainActor
+private func makeErrorViewModel() -> AppViewModel {
+    AppViewModel(
+        imageSourceService: ThrowingImageSourceService(),
         diskTargetService: FixtureDiskTargetService(disks: [makeFixtureUSBDisk()]),
         checksumService: DefaultChecksumService(),
         flashService: NoopFlashOrchestrationService(),
@@ -211,6 +237,7 @@ private enum ScreenshotError: Error, CustomStringConvertible {
     case encodeFailed(path: String)
     case writeFailed(path: String, underlying: Error)
     case stateDidNotAdvance(step: Int, targetCount: Int, sourceBytes: Int)
+    case errorStateNotSet
 
     var description: String {
         switch self {
@@ -224,6 +251,9 @@ private enum ScreenshotError: Error, CustomStringConvertible {
             return "Step-2 guard failed: view model did not advance to step 2 "
                 + "(currentStep=\(step), availableTargets=\(targetCount), sourceImageBytes=\(sourceBytes)). "
                 + "Refusing to write a blank step2_target.png."
+        case .errorStateNotSet:
+            return "Error-state guard failed: currentError was nil after selectSource "
+                + "with the throwing fake; refusing to write a blank error-state PNG."
         }
     }
 }
@@ -296,12 +326,28 @@ struct USBImagerShots {
                 width: canvasWidth,
                 height: canvasHeight
             )
+
+            // --- Error state (source-stat failure, error badge visible) ---
+            // Drive selectSource with the throwing fake so currentError is set.
+            // The guard below ensures the badge will be visible in the render.
+            let errorVM = makeErrorViewModel()
+            await errorVM.selectSource(URL(fileURLWithPath: "/fixture/missing.iso"))
+            print("[USBImagerShots] error state: currentError=\(String(describing: errorVM.currentError))")
+            guard errorVM.currentError != nil else {
+                throw ScreenshotError.errorStateNotSet
+            }
+            try renderPNG(
+                RootView(vm: errorVM),
+                to: "\(screenshotsDir)/error_state.png",
+                width: canvasWidth,
+                height: canvasHeight
+            )
         } catch {
             FileHandle.standardError.write(Data("[USBImagerShots] error: \(error)\n".utf8))
             exit(1)
         }
 
-        print("[USBImagerShots] wrote screenshots/main_window.png and screenshots/step2_target.png")
+        print("[USBImagerShots] wrote screenshots/main_window.png, screenshots/step2_target.png, and screenshots/error_state.png")
         exit(0)
     }
 }

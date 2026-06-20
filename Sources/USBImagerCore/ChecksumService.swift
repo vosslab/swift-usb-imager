@@ -110,30 +110,43 @@ public struct DefaultChecksumService: ChecksumService {
     ///      cache. A hit returns `.trustedCacheHit`.
     ///   3. Nothing to compare against: return `.noOfficialChecksum`.
     ///
-    /// Keychain errors during the cache lookup are swallowed (treated as a cache miss)
-    /// because a lookup failure must never block a flash result from resolving.
+    /// A genuine Keychain access failure during the cache probe is distinguished
+    /// from a true miss. `keychainStore.lookup` returns `nil` for a real miss (the
+    /// digest is simply not cached) and throws only on an access error. A real
+    /// access error is propagated as `CoreError.badInput` so the caller can surface
+    /// it; it is NOT collapsed into `.noOfficialChecksum`, which would silently
+    /// downgrade a verification verdict.
     ///
     /// - Parameters:
     ///   - deviceDigest: the digest to evaluate.
     ///   - officialDigest: the user-supplied expected digest, or `nil`.
     ///   - imageByteLength: the image byte length used as the Keychain cache key.
     /// - Returns: the resolved `ChecksumMatchOutcome`.
+    /// - Throws: `CoreError.badInput` when the Keychain cache probe fails for a
+    ///   reason other than a true miss.
     public func matchOutcome(
         deviceDigest: SHA512Digest,
         officialDigest: SHA512Digest?,
         imageByteLength: Int
-    ) -> ChecksumMatchOutcome {
+    ) throws -> ChecksumMatchOutcome {
         // Priority 1: official digest provided -- compare and return immediately.
         if let official = officialDigest {
             return deviceDigest == official ? .officialMatch : .officialMismatch
         }
         // Priority 2: no official digest -- probe the Keychain trusted cache.
-        // A lookup error is treated as a cache miss; flash results must resolve.
-        let cached = try? keychainStore.lookup(sha512: deviceDigest, imageByteLength: imageByteLength)
+        // A true miss returns nil (-> noOfficialChecksum below). A genuine access
+        // error throws CoreError.badInput so the caller can surface it instead of
+        // silently downgrading the verdict.
+        let cached: TrustedChecksum?
+        do {
+            cached = try keychainStore.lookup(sha512: deviceDigest, imageByteLength: imageByteLength)
+        } catch {
+            throw CoreError.badInput(message: "Keychain trusted-cache lookup failed: \(error).")
+        }
         if cached != nil {
             return .trustedCacheHit
         }
-        // Priority 3: nothing to compare against.
+        // Priority 3: nothing to compare against (a true cache miss).
         return .noOfficialChecksum
     }
 

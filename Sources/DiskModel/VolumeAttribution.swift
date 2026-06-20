@@ -24,6 +24,11 @@ public struct VolumeFact: Sendable, Equatable {
     /// Absolute mount point if the node is mounted, otherwise `nil`.
     public let mountPoint: String?
 
+    /// The DiskArbitration volume name (for example `"UNTITLED"`, `"Macintosh HD"`).
+    ///
+    /// Empty string when the node carries no volume name.
+    public let volumeName: String
+
     /// `true` when this node is (or hosts) a bootable macOS system volume.
     public let isMacOSSystem: Bool
 
@@ -33,11 +38,13 @@ public struct VolumeFact: Sendable, Equatable {
     public init(
         bsdName: String,
         mountPoint: String?,
+        volumeName: String = "",
         isMacOSSystem: Bool,
         isTimeMachine: Bool
     ) {
         self.bsdName = bsdName
         self.mountPoint = mountPoint
+        self.volumeName = volumeName
         self.isMacOSSystem = isMacOSSystem
         self.isTimeMachine = isTimeMachine
     }
@@ -57,14 +64,23 @@ public struct AttributedVolumes: Sendable, Equatable {
     /// `true` when any node on the disk carries a Time Machine backup.
     public let carriesTimeMachine: Bool
 
+    /// The first non-empty volume name found across mounted nodes, or empty string.
+    ///
+    /// Used as the human-readable volume label in the target-row secondary line.
+    /// The value is the first non-empty `VolumeFact.volumeName` after sorting by
+    /// mount point so the result is deterministic across runs.
+    public let volumeLabel: String
+
     public init(
         mountPoints: [String],
         carriesMacOSSystem: Bool,
-        carriesTimeMachine: Bool
+        carriesTimeMachine: Bool,
+        volumeLabel: String = ""
     ) {
         self.mountPoints = mountPoints
         self.carriesMacOSSystem = carriesMacOSSystem
         self.carriesTimeMachine = carriesTimeMachine
+        self.volumeLabel = volumeLabel
     }
 }
 
@@ -91,6 +107,8 @@ public enum VolumeAttribution {
         var mountSet = Set<String>()
         var carriesSystem = false
         var carriesTimeMachine = false
+        // Collect name-bearing facts for a deterministic label pick below.
+        var namedFacts: [(mountPoint: String, volumeName: String)] = []
         for fact in facts {
             // Only fold facts whose physical parent is the target whole disk.
             guard DiskIdentity.wholeDiskName(for: fact.bsdName) == wholeDiskName else {
@@ -98,6 +116,10 @@ public enum VolumeAttribution {
             }
             if let mount = fact.mountPoint, !mount.isEmpty {
                 mountSet.insert(mount)
+                // Retain (mount, name) pairs so the label pick is sorted below.
+                if !fact.volumeName.isEmpty {
+                    namedFacts.append((mountPoint: mount, volumeName: fact.volumeName))
+                }
             }
             // OR the roles: a single system or backup volume taints the disk.
             carriesSystem = carriesSystem || fact.isMacOSSystem
@@ -105,10 +127,14 @@ public enum VolumeAttribution {
         }
         // Sort for a stable, deterministic descriptor.
         let mountPoints = mountSet.sorted()
+        // Pick the first volume name by sorted mount point so the result is stable.
+        let firstNamed = namedFacts.sorted { $0.mountPoint < $1.mountPoint }.first
+        let volumeLabel = firstNamed?.volumeName ?? ""
         let result = AttributedVolumes(
             mountPoints: mountPoints,
             carriesMacOSSystem: carriesSystem,
-            carriesTimeMachine: carriesTimeMachine
+            carriesTimeMachine: carriesTimeMachine,
+            volumeLabel: volumeLabel
         )
         return result
     }

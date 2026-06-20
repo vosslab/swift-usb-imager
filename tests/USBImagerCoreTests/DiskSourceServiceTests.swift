@@ -166,11 +166,13 @@ struct DiskTargetServiceValidTargetsTests {
         let badInternal = makeDisk(bsdName: "disk0", isInternal: true, carriesMacOSSystem: true)
         let badSynthesized = makeDisk(bsdName: "disk3", isSynthesized: true)
 
-        // Build the service using the enumerator initializer path that does not
-        // require a live DiskArbitration session for validTargets.
-        // Since init?() may fail in restricted environments, provide a fallback.
+        // Build the service via the enumerator initializer path. init?() can fail
+        // in restricted environments; a nil enumerator surfaces as a visible
+        // known issue rather than a silent pass.
         guard let enumerator = DiskEnumerator() else {
-            // Skip the test if DiskArbitration is not available.
+            withKnownIssue("DiskArbitration unavailable; cannot build DefaultDiskTargetService") {
+                Issue.record("DiskEnumerator() returned nil")
+            }
             return
         }
         let service = DefaultDiskTargetService(enumerator: enumerator)
@@ -180,8 +182,9 @@ struct DiskTargetServiceValidTargetsTests {
             imageSizeBytes: smallImage,
             sourceBackingBSDName: nil
         )
-        #expect(result.count == 1)
-        #expect(result[0].bsdName == "disk4")
+        // Guard-first so an unexpected count cannot trap on the [0] index; the
+        // intent is "only the good disk survives", expressed structurally.
+        #expect(result.map(\.bsdName) == ["disk4"])
     }
 
     @Test("validTargets returns an empty list when all disks are invalid")
@@ -192,6 +195,9 @@ struct DiskTargetServiceValidTargetsTests {
         let timeMachine6 = makeDisk(bsdName: "disk6", carriesTimeMachine: true)
 
         guard let enumerator = DiskEnumerator() else {
+            withKnownIssue("DiskArbitration unavailable; cannot build DefaultDiskTargetService") {
+                Issue.record("DiskEnumerator() returned nil")
+            }
             return
         }
         let service = DefaultDiskTargetService(enumerator: enumerator)
@@ -210,6 +216,9 @@ struct DiskTargetServiceValidTargetsTests {
         let disk4 = makeDisk(bsdName: "disk4", sizeBytes: 32_000_000_000)
 
         guard let enumerator = DiskEnumerator() else {
+            withKnownIssue("DiskArbitration unavailable; cannot build DefaultDiskTargetService") {
+                Issue.record("DiskEnumerator() returned nil")
+            }
             return
         }
         let service = DefaultDiskTargetService(enumerator: enumerator)
@@ -225,6 +234,9 @@ struct DiskTargetServiceValidTargetsTests {
     @Test("validTargets returns an empty list for an empty input")
     func validTargetsEmpty() {
         guard let enumerator = DiskEnumerator() else {
+            withKnownIssue("DiskArbitration unavailable; cannot build DefaultDiskTargetService") {
+                Issue.record("DiskEnumerator() returned nil")
+            }
             return
         }
         let service = DefaultDiskTargetService(enumerator: enumerator)
@@ -243,63 +255,119 @@ struct DiskTargetServiceValidTargetsTests {
 @Suite("DefaultDiskTargetService - displayName formatting")
 struct DiskTargetServiceDisplayNameTests {
 
-    // displayName is a pure function; build any DiskDescriptor and check the string.
-    private func makeService() -> DefaultDiskTargetService? {
-        guard let enumerator = DiskEnumerator() else {
-            return nil
-        }
-        return DefaultDiskTargetService(enumerator: enumerator)
+    // displayName forwards to the pure DiskModel.diskDisplayName(for:) formatter.
+    // These tests call that formatter directly on a DiskDescriptor, so no live
+    // DiskArbitration enumerator is needed and the cases cannot silently skip.
+    // The structural checks below (vendor prefix, size suffix, protocol token)
+    // survive label-wording tweaks; the one exact-equality case is a deliberate,
+    // documented lock on the full display-string contract.
+
+    // MARK: Vendor + model present (full human identity)
+
+    @Test("displayName for a vendor+model USB disk locks the full human identity")
+    func displayNameUSBWithVendorModel() {
+        // Simulate a real USB drive where DiskArbitration provides vendor and model.
+        let disk = DiskDescriptor(
+            bsdName: "disk4",
+            devicePath: "/dev/disk4",
+            rawDevicePath: "/dev/rdisk4",
+            sizeBytes: 32_000_000_000,
+            isRemovable: true,
+            isEjectable: true,
+            isInternal: false,
+            busProtocol: .usb,
+            isWritable: true,
+            isSynthesized: false,
+            carriesMacOSSystem: false,
+            carriesTimeMachine: false,
+            mountPoints: [],
+            vendor: "SanDisk",
+            model: "Ultra"
+        )
+        let name = diskDisplayName(for: disk)
+        // Intentional display-contract lock: this one case pins the full string
+        // (vendor + model + decimal-GB size) so an accidental format change is
+        // caught. Other cases below use structural checks.
+        #expect(name == "SanDisk Ultra 32.0 GB")
     }
 
-    @Test("displayName for a 32 GB USB disk uses decimal GB and USB protocol label")
+    // MARK: Vendor/model absent (bus-protocol fallback)
+
+    @Test("displayName without vendor/model carries the USB protocol token and size")
     func displayNameUSB32GB() {
-        guard let service = makeService() else { return }
+        // No vendor or model: falls back to bus-protocol label.
         let disk = makeDisk(bsdName: "disk4", sizeBytes: 32_000_000_000, busProtocol: .usb)
-        let name = service.displayName(for: disk)
-        // 32_000_000_000 / 1e9 = 32.0 GB
-        #expect(name == "disk4  (usb, 32.0 GB)")
+        let name = diskDisplayName(for: disk)
+        // Structural: a USB token plus the decimal-GB size, order-independent.
+        #expect(name.localizedCaseInsensitiveContains("USB"))
+        #expect(name.hasSuffix("32.0 GB"))
     }
 
-    @Test("displayName for a 64 GB SD disk uses SD protocol label")
+    @Test("displayName for an SD disk carries the SD protocol token and size")
     func displayNameSD64GB() {
-        guard let service = makeService() else { return }
         let disk = makeDisk(bsdName: "disk5", sizeBytes: 64_000_000_000, busProtocol: .sd)
-        let name = service.displayName(for: disk)
-        #expect(name == "disk5  (sd, 64.0 GB)")
+        let name = diskDisplayName(for: disk)
+        #expect(name.localizedCaseInsensitiveContains("SD"))
+        #expect(name.hasSuffix("64.0 GB"))
     }
 
-    @Test("displayName for an NVMe internal disk includes nvme label")
+    @Test("displayName for an NVMe internal disk carries the nvme token and size")
     func displayNameNVMe() {
-        guard let service = makeService() else { return }
         let disk = makeDisk(
             bsdName: "disk0",
             sizeBytes: 500_300_000_000,
             isInternal: true,
             busProtocol: .nvme
         )
-        let name = service.displayName(for: disk)
+        let name = diskDisplayName(for: disk)
         // 500_300_000_000 / 1e9 = 500.3
-        #expect(name == "disk0  (nvme, 500.3 GB)")
+        #expect(name.localizedCaseInsensitiveContains("NVME"))
+        #expect(name.hasSuffix("500.3 GB"))
     }
 
-    @Test("displayName for a virtual (synthesized) disk uses virtual label")
+    @Test("displayName for a virtual (synthesized) disk carries the virtual token")
     func displayNameVirtual() {
-        guard let service = makeService() else { return }
         let disk = makeDisk(
             bsdName: "disk3",
             sizeBytes: 500_300_000_000,
             busProtocol: .virtual,
             isSynthesized: true
         )
-        let name = service.displayName(for: disk)
-        #expect(name == "disk3  (virtual, 500.3 GB)")
+        let name = diskDisplayName(for: disk)
+        #expect(name.localizedCaseInsensitiveContains("VIRTUAL"))
+        #expect(name.hasSuffix("500.3 GB"))
     }
 
-    @Test("displayName bsdName always appears first in the string")
-    func displayNameBSDNameFirst() {
-        guard let service = makeService() else { return }
+    @Test("displayName size always appears in the string")
+    func displayNameContainsSize() {
         let disk = makeDisk(bsdName: "disk9", sizeBytes: 16_000_000_000)
-        let name = service.displayName(for: disk)
-        #expect(name.hasPrefix("disk9  ("))
+        let name = diskDisplayName(for: disk)
+        // Size suffix is always present; vendor/model may vary.
+        #expect(name.hasSuffix("16.0 GB"))
+    }
+
+    @Test("displayName with vendor only carries the vendor prefix and size")
+    func displayNameVendorOnly() {
+        let disk = DiskDescriptor(
+            bsdName: "disk4",
+            devicePath: "/dev/disk4",
+            rawDevicePath: "/dev/rdisk4",
+            sizeBytes: 32_000_000_000,
+            isRemovable: true,
+            isEjectable: true,
+            isInternal: false,
+            busProtocol: .usb,
+            isWritable: true,
+            isSynthesized: false,
+            carriesMacOSSystem: false,
+            carriesTimeMachine: false,
+            mountPoints: [],
+            vendor: "SanDisk",
+            model: ""
+        )
+        let name = diskDisplayName(for: disk)
+        // Structural: vendor leads, size trails; empty model leaves no gap to pin.
+        #expect(name.hasPrefix("SanDisk"))
+        #expect(name.hasSuffix("32.0 GB"))
     }
 }

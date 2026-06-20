@@ -1,7 +1,6 @@
-/// Digest.swift - CryptoKit streaming SHA-512 (primary) and SHA-256 (internal).
+/// Digest.swift - CryptoKit streaming SHA-512.
 ///
-/// Public MVP API exposes only SHA-512. SHA-256 is kept in source for future
-/// extension but is not surfaced as a public type or function.
+/// The public MVP API exposes only SHA-512.
 import CryptoKit
 import Foundation
 
@@ -115,20 +114,4 @@ public func sha512(of data: Data) -> SHA512Digest {
     var h = SHA512Hasher()
     h.update(data)
     return h.finalize()
-}
-
-// MARK: - SHA-256 (internal, not in public MVP API)
-
-/// Internal SHA-256 hasher - available in source for future extension but
-/// intentionally not exposed as a public type.
-struct SHA256Hasher {
-    private var hasher = CryptoKit.SHA256()
-
-    mutating func update(_ data: Data) {
-        hasher.update(data: data)
-    }
-
-    func finalize() -> [UInt8] {
-        Array(hasher.finalize())
-    }
 }

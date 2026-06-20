@@ -28,7 +28,7 @@ swift-usb-imager/
 +- docs/                  Documentation (see subtree below)
 +- screenshots/           Offscreen-rendered PNG screenshots (generated)
 +- devel/                 Developer tools and scripts
-+- tools/                 Miscellaneous helper scripts
++- tools/                 Helper scripts + authopen_fd_probe/ (spike, see below)
 +- USBImagerApp.app/      Built app bundle (generated, not committed)
 +- OTHER_REPOS/           Local sibling repo checkouts (not committed)
 ```
@@ -74,8 +74,16 @@ Sources/
 +- USBImagerShots/        Offscreen ImageRenderer screenshot harness
 |  `- USBImagerShots.swift
 +- PrivilegedHelper/      Root LaunchDaemon: write, verify, unmount, auth stub
++- AuthopenProbeCore/     SPIKE (non-production): pure preflight decision logic for
+|                         the authopen raw-disk-write research; fixture-tested, not
+|                         wired into the flash path
 `- README.md              Per-target module summary
 ```
+
+The `authopen_fd_probe` executable lives under `tools/authopen_fd_probe/`
+(not `Sources/`); both it and `AuthopenProbeCore` are NON-PRODUCTION research
+spikes for the authopen raw-disk-write investigation. See the `tools/` subtree
+below.
 
 ### Tests/
 
@@ -91,7 +99,9 @@ Tests/
 +- PrivilegedHelperTests/
 +- AppUITests/
 +- USBImagerCoreTests/
-`- USBImagerCLITests/
++- USBImagerCLITests/
+`- AuthopenProbeCoreTests/    SPIKE (non-production): fixture tests for the
+                             authopen preflight decision logic
 ```
 
 ### tests/
@@ -108,6 +118,21 @@ tests/
 +- test_shebangs.py           shebang + executable-bit enforcement
 +- TESTS_README.md            test suite overview
 `- ... (other hygiene tests)
+```
+
+### tools/
+
+Helper scripts plus one NON-PRODUCTION research spike. The spike is kept out of
+the shipping flash path and out of the main `swift test` lane.
+
+```
+tools/
++- build_bundle.sh        App-bundle assembly helper
++- sign_app.sh            Code-signing helper
++- notarize.sh            Notarization helper
+`- authopen_fd_probe/     SPIKE (non-production): standalone authopen / SCM_RIGHTS
+   +- main.swift          fd-passing probe harness; depends on AuthopenProbeCore
+   `- README.md           Probe build/run notes (selftest mode)
 ```
 
 ### docs/

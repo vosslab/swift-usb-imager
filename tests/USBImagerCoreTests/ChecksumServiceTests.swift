@@ -35,6 +35,18 @@ private func makeService(backend: InMemoryKeychainBackend = InMemoryKeychainBack
     DefaultChecksumService(keychainStore: KeychainStore(backend: backend))
 }
 
+/// A `KeychainBackend` whose `loadAll()` always throws a Keychain access error.
+/// Injected to prove `matchOutcome` distinguishes a real access failure (which
+/// must throw) from a true cache miss (which an empty in-memory backend models).
+private struct ThrowingLoadAllKeychainBackend: KeychainBackend {
+    func add(key: String, value: Data) throws {}
+    func loadAll() throws -> [Data] {
+        // errSecAuthFailed (-25293) stands in for a real Keychain access error.
+        throw KeychainError.keychainStatus(-25293)
+    }
+    func delete(key: String) throws {}
+}
+
 // MARK: - validatePastedHex
 
 @Suite("validatePastedHex")
@@ -175,17 +187,17 @@ struct MatchesTests {
 struct MatchOutcomeTests {
 
     @Test("officialDigest present and matching returns officialMatch")
-    func officialMatch() {
+    func officialMatch() throws {
         let svc = makeService()
         let d = digest(deviceHex)
-        let outcome = svc.matchOutcome(deviceDigest: d, officialDigest: d, imageByteLength: 1_000)
+        let outcome = try svc.matchOutcome(deviceDigest: d, officialDigest: d, imageByteLength: 1_000)
         #expect(outcome == .officialMatch)
     }
 
     @Test("officialDigest present but mismatched returns officialMismatch")
-    func officialMismatch() {
+    func officialMismatch() throws {
         let svc = makeService()
-        let outcome = svc.matchOutcome(
+        let outcome = try svc.matchOutcome(
             deviceDigest: digest(deviceHex),
             officialDigest: digest(expectedHex),
             imageByteLength: 1_000
@@ -202,14 +214,14 @@ struct MatchOutcomeTests {
         // Pre-populate the cache so a lookup succeeds.
         let trusted = TrustedChecksum(sha512: d, imageByteLength: byteLength, originalFilename: "test.iso")
         try svc.saveTrustedCache(trusted)
-        let outcome = svc.matchOutcome(deviceDigest: d, officialDigest: nil, imageByteLength: byteLength)
+        let outcome = try svc.matchOutcome(deviceDigest: d, officialDigest: nil, imageByteLength: byteLength)
         #expect(outcome == .trustedCacheHit)
     }
 
     @Test("No officialDigest and empty cache returns noOfficialChecksum")
-    func noOfficialChecksum() {
+    func noOfficialChecksum() throws {
         let svc = makeService()
-        let outcome = svc.matchOutcome(
+        let outcome = try svc.matchOutcome(
             deviceDigest: digest(deviceHex),
             officialDigest: nil,
             imageByteLength: 3_000
@@ -227,12 +239,42 @@ struct MatchOutcomeTests {
         let trusted = TrustedChecksum(sha512: d, imageByteLength: byteLength, originalFilename: "test.iso")
         try svc.saveTrustedCache(trusted)
         // Pass a mismatched official digest -- should return officialMismatch, not trustedCacheHit.
-        let outcome = svc.matchOutcome(
+        let outcome = try svc.matchOutcome(
             deviceDigest: d,
             officialDigest: digest(expectedHex),
             imageByteLength: byteLength
         )
         #expect(outcome == .officialMismatch)
+    }
+
+    @Test("A genuine Keychain access error throws CoreError instead of a silent miss")
+    func keychainAccessErrorThrows() {
+        // The probe backend always throws on loadAll, modeling a real access
+        // failure (not a miss). matchOutcome must propagate a typed CoreError
+        // rather than collapsing into .noOfficialChecksum.
+        let svc = DefaultChecksumService(
+            keychainStore: KeychainStore(backend: ThrowingLoadAllKeychainBackend())
+        )
+        #expect(throws: CoreError.self) {
+            try svc.matchOutcome(
+                deviceDigest: digest(deviceHex),
+                officialDigest: nil,
+                imageByteLength: 5_000
+            )
+        }
+    }
+
+    @Test("A true cache miss does not throw and stays noOfficialChecksum")
+    func trueMissDoesNotThrow() throws {
+        // An empty in-memory backend returns nil on lookup (a true miss), which
+        // must resolve to .noOfficialChecksum without throwing.
+        let svc = makeService()
+        let outcome = try svc.matchOutcome(
+            deviceDigest: digest(deviceHex),
+            officialDigest: nil,
+            imageByteLength: 6_000
+        )
+        #expect(outcome == .noOfficialChecksum)
     }
 }
 

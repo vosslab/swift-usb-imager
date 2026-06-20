@@ -1,6 +1,362 @@
+## 2026-06-19
+
+### Additions and New Features
+
+- Added `docs/TODO.md` and `docs/ROADMAP.md` (task #46) to lay out the remaining
+  work before the app can flash, ahead of a preliminary commit. `docs/TODO.md`
+  is a scannable backlog grouped by theme (critical flash-path wiring, the
+  pending hardware-gated privilege model, UI/code-quality work packages, six-pass
+  review follow-ups, and the distribution decision), most-blocking first.
+  `docs/ROADMAP.md` is a five-phase plan (preliminary commit; hardware lane to
+  decide the privilege model, marked the critical-path gate; implement the chosen
+  write backend + wire the flash path; UI/code-quality polish; signing +
+  distribution) with an explicit "not started yet" section. Both stay honest that
+  the app builds and the suite passes (357 tests) but flashing is not yet
+  operational. Links cross-reference the decision record
+  (`raw_disk_write_model.md`), the hardware runbook (`authopen_hardware_runbook.md`),
+  the helper-path audit (`wp_helper_path_findings.md`), the backend design
+  (`rawdiskopener_design.md`), and `docs/SIGNING.md`. Verification:
+  `pytest tests/test_markdown_links.py` -> passed; ASCII-only confirmed.
+
+- Added human-readable disk identity to target rows in the Target panel
+  (WP-disk-identity, task #7, deadcode F4/F5). `DiskDescriptor` gained three new
+  optional fields (`vendor`, `model`, `volumeLabel`) populated by `DiskEnumerator`
+  from `kDADiskDescriptionDeviceVendorKey`, `kDADiskDescriptionDeviceModelKey`, and
+  the volume-name fold through `VolumeAttribution`. `VolumeFact` gained a
+  `volumeName` field (defaulted to `""`) and `AttributedVolumes` gained `volumeLabel`
+  so the per-node name folds to the physical-disk descriptor without touching
+  enumeration logic. `DefaultDiskTargetService.displayName(for:)` now composes a
+  human identity from vendor + model + size (e.g. "SanDisk Ultra 32.0 GB");
+  graceful degradation: vendor only, model only, or bus-protocol label (e.g.
+  "USB 32.0 GB") when device strings are absent. `AppViewModel` exposes
+  `displayName(for:)` publicly so `TargetPanel` can route the primary label through
+  the core helper. `DiskRow` in `Sources/AppUI/TargetPanel.swift` now shows PRIMARY
+  (human identity via core `displayName`) and SECONDARY (volume label + BSD name,
+  e.g. "UNTITLED - disk4") text, so the operator always has an unambiguous
+  identifier without needing to know BSD names. All existing `DiskDescriptor` call
+  sites compile unchanged (new fields default to empty string). Added three new
+  `displayName` unit tests in `DiskSourceServiceTests.swift` covering full identity,
+  vendor-only, and size-suffix presence; updated the four brittle exact-format tests
+  to the new format. Glass identity preserved: `DiskRow` layout unchanged except text
+  content. Build: "Build complete!" (0 errors). Tests: 0 failures.
+
+- Added inline error rendering across all three input panels (WP-panel-error-render, task #10,
+  audit findings F8/F9). A new `ErrorBadge` view in `Sources/AppUI/StyleHelpers.swift`
+  renders `AppViewModel.currentError` as a high-contrast red-tinted inset (near-opaque
+  `Color.red.opacity(0.82)` fill, white icon and white text) over the Liquid Glass panels
+  so error state is legible over any glass refraction. `SourcePanel`, `TargetPanel`, and
+  `VerifyPanel` each bind to `vm.currentError` via an `if let` guard and call
+  `userMessage(for:)` from `USBImagerCore` to get the display string; they clear
+  automatically when `currentError` returns to nil. Added a new error-state scene to the
+  `USBImagerShots` screenshot harness: a `ThrowingImageSourceService` fake drives
+  `selectSource` into the error path, and a guard asserts `currentError != nil` before
+  rendering, so a blank badge PNG is never written silently. Output:
+  `screenshots/error_state.png`. Glass identity preserved: `ErrorBadge` is an inset over
+  the panel, not an opaque panel replacement. Build: "Build complete!" (0 errors).
+  Tests: 354 passed, 0 failures (baseline preserved).
+
+- Added live `accessibilityReduceTransparency` opaque fallback to `PanelCardModifier`
+  in `Sources/AppUI/StyleHelpers.swift` (WP-reduce-transparency, audit finding F1).
+  `PanelCardModifier` now reads `@Environment(\.accessibilityReduceTransparency)` and
+  derives a `useOpaquePath` bool: `documentationRender || reduceTransparency`. When true,
+  the four panel cards render using the existing opaque charcoal path (solid dark fill,
+  promoted foreground hierarchy, `.colorScheme(.dark)`) instead of `.glassEffect`.
+  `CardSurfaceModifier` parameter renamed from `documentationRender: Bool` to
+  `useOpaquePath: Bool` to reflect the combined condition. Default (a11y off,
+  non-doc-render) Liquid Glass appearance is unchanged. Build: "Build complete!" (0 errors).
+  Tests: 347 passed, 0 failures (baseline preserved).
+
+- Added an observable typed error surface to `AppViewModel`
+  (`Sources/AppUI/AppViewModel.swift`): a new `public private(set) var currentError: CoreError?`
+  (WP-core-typed-errors, task #9, safety-audit HIGH#1 + HIGH#2). It is set on a
+  source-stat failure and on a trusted-cache probe failure, and cleared on a
+  successful source selection, on a successful flash result, and on `reset`, so a
+  stale error never outlives a later success. Added a `userMessage(for:)` overload
+  for `CoreError` in `Sources/USBImagerCore/CoreError.swift` (mirroring the existing
+  `FlashEngineError` mapping) so a front end renders the surface through the shared
+  core taxonomy rather than inventing its own copy. Build: "Build complete!" (0 errors).
+
+### Behavior or Interface Changes
+
+- `ChecksumService.matchOutcome(deviceDigest:officialDigest:imageByteLength:)` is now
+  `throws` (`Sources/USBImagerCore/Services.swift`, `ChecksumService.swift`). A true
+  trusted-cache miss still resolves to `.noOfficialChecksum`; a genuine Keychain
+  access error now throws `CoreError.badInput` instead of being collapsed into a
+  silent miss (safety-audit HIGH#2). Updated `AppViewModel.applySuccess` to surface
+  a thrown probe error on `currentError` while still resolving the write to
+  `.succeeded`. Updated the CLI test fakes and core `matchOutcome` tests to the new
+  throwing signature.
+
+### Fixes and Maintenance
+
+- Stripped planning-scaffolding tags from permanent code comments (task #45).
+  `Sources/AppUI/TargetPanel.swift` line 123: removed `(WP-disk-identity)` from
+  the inline comment; result is "so the GUI and CLI share one canonical format."
+  `Sources/AppUI/StyleHelpers.swift`: removed `(F8/F9 glass-audit fix)` from the
+  MARK line (now "// MARK: - Error badge") and replaced the audit-ticket sentence
+  "Audit findings F8 and F9 flagged that..." with a plain design-intent statement
+  ("Bare colored caption text over glass loses contrast; the dense inset preserves
+  legibility."). No logic, no behavior, no test changes. Verified: `swift build` ->
+  "Build complete!"; `swift test` -> "Test run with 355 tests in 86 suites passed",
+  exit 0; grep confirms zero remaining WP-/F8/F9/"Audit findings" tags in both files.
+- Replaced unsafe force-unwraps surfaced by the pre-commit audit (task #11,
+  WP-forceunwrap-audit). Two were commit-blockers. CB-2: in
+  `Sources/AppUI/SourcePanel.swift` the file importer built
+  `allowedContentTypes` from `UTType(filenameExtension: "iso")!` and
+  `...: "img")!`, which would crash the picker if a UTType could not resolve.
+  Added `import UniformTypeIdentifiers` and two file-scope constants,
+  `isoContentType`/`imgContentType`, each `UTType(filenameExtension:) ?? .data`,
+  and pass those instead; the importer can no longer crash. CB-1: in
+  `tools/authopen_fd_probe/main.swift` the `.accept`-branch preflight log
+  printed `/dev/\(bootWholeBSD ?? "")`, masking a logic guarantee with `?? ""`.
+  Bound the value explicitly as `let bootBSD = bootWholeBSD!` with a one-line
+  invariant comment (gate 5 refuses with `.bootDiskUnknown` when nil, so
+  `.accept` guarantees non-nil); this is logging-only, not a safety gate.
+  D-1/D-2: added one-line SAFETY comments at each `baseAddress!` cluster in the
+  `withUnsafeBytes`/`withUnsafeMutableBytes` POSIX and `utsname` closures
+  (selftest write/read, regular-file isolation write/read-back, cmsg fd copy,
+  `unameString`) explaining the buffer is a non-empty fixed array so the stdlib
+  guarantees baseAddress is non-nil; buffer logic unchanged. D-3: added a NOTE
+  comment at `diskModelValidTargets` in `Sources/DiskModel/DiskSafety.swift`
+  stating it exists as a recursion guard so conformers avoid the bare
+  `validTargets(...)` self-resolving to the protocol method. ac-comment
+  Finding 3: corrected the file-level summary and the `runAuthopenScaffold`
+  step list to say revalidation re-checks the HARDWARE FLAGS
+  (external/removable/not-internal/not-boot) AND identity before open, matching
+  the post-#43 `revalidateDiskIdentity` behavior. No runtime behavior changed
+  except removing the crash/`?? ""` risks; the probe stays open/fstat/close for
+  raw devices. Verification: `swift build` -> "Build complete!"; `swift test` ->
+  "Test run with 357 tests in 86 suites passed", exit 0 (baseline 357);
+  `swift run authopen_fd_probe selftest` -> "ALL CHECKS PASSED", exit 0
+  (unchanged). ASCII check passed on all three edited files.
+- Consolidated three byte-for-byte duplicate `DiskTargetService` helpers into one
+  shared point each (task #13, WP-snapshot-dedup-deadcode). Added two public free
+  functions to `Sources/DiskModel/DiskSafety.swift`: `diskDisplayName(for:)` (the
+  one canonical disk display-name formatter) and `diskModelValidTargets(...)` (a
+  distinctly named alias for the `validTargets` free function that conformers can
+  call without the bare name self-resolving to the protocol method and recursing).
+  Routed `DefaultDiskTargetService` (`Sources/USBImagerCore/DiskTargetService.swift`),
+  `EmptyDiskTargetService` (`Sources/AppUI/AppViewModel.swift`), and
+  `FixtureDiskTargetService` (`Sources/USBImagerShots/USBImagerShots.swift`) through
+  the shared functions, deleting the three private `displayName` bodies and the
+  three private `diskModelValidTargets`/`safeDiskModelValidTargets` wrappers.
+  `displayName` output and `validTargets` results are byte-for-byte unchanged.
+  Added `import Foundation` to `DiskSafety.swift` for `String(format:)`.
+- Removed a duplicated docstring sentence ("Maps a `FlashEngineError` to a
+  user-facing message string.") and a stray blank `///` line above
+  `userMessage(for: FlashEngineError)` in `Sources/USBImagerCore/CoreError.swift`.
+- Removed the "(WP-disk-identity)" planning tag from the `FixtureDiskTargetService`
+  comment in `Sources/USBImagerShots/USBImagerShots.swift` (the helper now forwards
+  to the shared formatter).
+- Hardened the authopen fd probe from the six-pass independent review (task
+  #43). In `tools/authopen_fd_probe/main.swift`: (a) routed every
+  operator-facing "Removable: YES (...)" progress line (the `.accept`,
+  `.isInternal`, and `printGatesThroughInternal` print paths) through a new
+  `removabilityFlags(plist:)` helper that uses the SAME `as? Bool ?? false`
+  reads as the pure evaluator's removable gate, so the displayed flags cannot
+  drift from the value the gate decided on. (b) Documented at the `openFlags`
+  assignment that `O_EXCL` has no exclusivity effect on a regular file (no
+  `O_CREAT`) and is meaningful only on a raw device node, recording it as the
+  spike-noted deviation. (c) Rewrote `revalidateDiskIdentity` to fetch the
+  whole-disk plist ONCE and re-run the full pure preflight evaluator (external
+  / removable / not-internal / not-boot) on it before the identity-field
+  compare, closing the window where a disk keeps its UUID/size/name but flips a
+  hardware flag; the UUID mismatch alone would not catch that. (d) Added a
+  bounded isolation write/read-back through the received fd for REGULAR-FILE
+  targets only (mirrors the selftest), proving read/write capability through
+  the passed fd after authopen exits; raw devices stay open/fstat/close with no
+  write payload (gated on `!targetPath.hasPrefix("/dev/")`). (e) Replaced the
+  inline `String(diskPath.dropFirst("/dev/".count))` BSD-name derivation with
+  the existing `wholeDiskBSD(fromRaw:)` from `AuthopenProbeCore`. (g) Comment
+  hygiene: removed the planning tag from the module doc, expanded the TWO MODES
+  and `rawDevicePreflight` docs to list every gate including the
+  identity-capture (TotalSize) refusal, added a "which gates passed" comment
+  before the `.isBootDisk` arm, and removed the now-dead `captureDiskIdentity`
+  wrapper (orphaned by the revalidation rewrite). In `Package.swift`: (f)
+  removed the `.library(name: "AuthopenProbeCore", ...)` PRODUCT entry so the
+  spike library is not published; the `.target`, `.testTarget`, and probe
+  `.executable` remain so the binary and its hardware-free tests still build.
+  The pure evaluator's fail-closed logic in `PreflightCore.swift` was left
+  unchanged. Verification: `swift build` -> "Build complete!"; `swift test` ->
+  "Test run with 357 tests in 86 suites passed", exit 0 (baseline 357);
+  `swift run authopen_fd_probe selftest` -> "ALL CHECKS PASSED", exit 0
+  (unchanged). ASCII check passed on both edited files.
+- Documented the authopen raw-disk-write spike targets in the architecture and
+  file-structure docs and added a parent-plan cross-reference to the decision
+  record (task #42, from the working-tree review). `docs/FILE_STRUCTURE.md` now
+  lists `AuthopenProbeCore` in the `Sources/` subtree, adds a `tools/` subtree
+  section with `tools/authopen_fd_probe/`, and lists `AuthopenProbeCoreTests` in
+  the `Tests/` listing, each marked SPIKE (non-production). `docs/CODE_ARCHITECTURE.md`
+  gained two module-table rows and a "Research spike" callout clarifying that
+  `AuthopenProbeCore` and `authopen_fd_probe` are not wired into the shipping flash
+  path (verdict pending hardware). `docs/active_plans/decisions/raw_disk_write_model.md`
+  gained an intro line naming the parent plan `immutable-spinning-sifakis` and its
+  milestone/task scope (S1-S5, A1-A4, B1-B3) in prose, since the session-local plan
+  has no GitHub-browsable link. Review note: the flagged README first-paragraph
+  code span was not present; the only backticked `usbimager` is in the Status
+  section, which the About/first-paragraph pure-prose rule does not govern, so
+  README.md was left unchanged. Verification: `pytest tests/test_readme_first_paragraph.py
+  tests/test_markdown_links.py` -> 37 passed; ASCII check passed on all edited files.
+- Scoped `ErrorBadge` display per panel domain (P1 fix, task #39). Added
+  `CoreErrorDomain` enum (`.source`, `.target`, `.verify`) and a `domain`
+  computed property to `CoreError` in `Sources/USBImagerCore/CoreError.swift`.
+  Each case maps to exactly one domain: `.badInput` and `.appNotFound` to
+  `.source`; `.helperUnavailable` and `.flashFailed` to `.target`;
+  `.verificationMismatch` and `.cancelled` to `.verify`. `SourcePanel`,
+  `TargetPanel`, and `VerifyPanel` each guard the `ErrorBadge` on
+  `error.domain == .<their-domain>` so an error appears in exactly one panel
+  (the one matching its workflow phase). A source-file-stat failure
+  (`currentError = .badInput(...)` from `selectSource`) now shows only in
+  the Source panel and is suppressed in Target and Verify. Added one new
+  `@Suite("CoreError panel-domain mapping")` test in
+  `Tests/USBImagerCoreTests/SeamSmokeTests.swift` covering all six case->domain
+  mappings. Regenerated `screenshots/error_state.png` via `swift run
+  USBImagerShots`; the error badge appears in the Source panel only.
+  Build: "Build complete!" (0 errors). Tests: 357 passed (was 356), 0 failures.
+- Fixed a deterministic SIGSEGV (`EXC_BAD_ACCESS` at 0x0, signal 11) that aborted
+  `swift test` before the final summary (task #40). Root cause: the CLI
+  sync-over-async bridge `runBlocking<T>` in both
+  `Sources/USBImagerCLI/Subcommands/FlashCommand.swift` and `ListCommand.swift`
+  stored the async result in a captured stack-local `nonisolated(unsafe) var
+  result: T? = nil`, wrote it from a `Task.detached`, and read it back after
+  `semaphore.wait()`. Capturing a stack local by an `@escaping @Sendable` closure
+  and mutating it across the concurrency boundary is undefined behavior; for the
+  associated-value enum `FlashRunResult` the optimizer emitted a `@out` copy
+  (`memmove`) from a null box, crashing the detached-task thread inside
+  `_platform_memmove` during `FlashCommand.performFlash`. The crash surfaced after
+  the WP-disk-identity change only because added `DiskDescriptor` fields shifted
+  timing/layout; the disk-identity code itself was benign. Fix: replaced both
+  duplicated buggy helpers with one shared, well-defined helper in
+  `Sources/USBImagerCLI/RunBlocking.swift` that stores the result in a heap-
+  allocated `ResultBox` reference shared across threads (stable address, no
+  captured-stack-local UB), keeping the `DispatchSemaphore` happens-before barrier.
+  Removed the now-unused `import Dispatch` from `FlashCommand.swift`. No test was
+  deleted or weakened. Verification: `swift test --filter USBImagerCLITests` -> 49
+  tests in 15 suites passed, RC=0, no signal 11; full `swift test` -> "Test run
+  with 356 tests in 85 suites passed", shell RC=0; `swift build` -> "Build
+  complete!".
+- Refreshed `README.md` (readme-docs skill, task #37) for truthfulness about the
+  in-progress privileged flash path. Trimmed the opening paragraph to 225 chars
+  so it fits the GitHub About 250-char limit while keeping it prose-only (no
+  links/badges/code spans); confirmed via `tests/test_readme_first_paragraph.py`
+  (6 passed). Rewrote the Status section: the flash path is not
+  just "signing pending" but unwired (no installed daemon, so a flash attempt
+  fails at connection time, exit 4), and the least-persistent authopen
+  raw-disk-write model is noted as active research with a hardware-pending
+  verdict and no committed backend. Updated the stale "325 tests" claim to a
+  durable "350+ tests" and the flash note to match. Doc links and the
+  `build_debug.sh`/`swift test`/run-path quick start verified against the repo.
+- Fixed safety-audit HIGH#1: `AppViewModel.selectSource` no longer swallows a
+  source-stat failure into `print()` + `return`. It now sets the observable
+  `currentError` (a typed `CoreError`) and stays on step 1, so an unreadable source
+  is visible to the operator instead of leaving the UI silently on step 1.
+
+### Removals and Deprecations
+
+- Removed dead code found by a no-caller search across `Sources` and `Tests`
+  (task #13, WP-snapshot-dedup-deadcode). Deleted the unused internal
+  `SHA256Hasher` from `Sources/Verifier/Digest.swift` (zero references). Deleted
+  the dead `FlashProgressSnapshot.make(from: FlashProgress)` overload and its
+  `label(for: FlashPhase)` helper from `Sources/AppUI/FlashState.swift`:
+  production builds snapshots from the numeric `FlashProgressData` factory, and
+  only tests used the `FlashProgress` overload. Rewrote those `AppViewModelTests`
+  call sites to construct `FlashProgressData` instead (phases map 1:1:
+  `.writing`/`.verifying`) so the tests exercise the production factory; coverage
+  is equivalent (still 357 tests, all passing). Dropped the now-unused
+  `import HelperProtocol` from `FlashState.swift`.
+
+### Developer Tests and Notes
+
+- Test fragility cleanup (task #44): removed brittle assertions across eight test
+  files without losing real coverage. Replaced exact `phaseLabel` string asserts
+  ("Writing"/"Verifying") with a distinct-and-non-empty check
+  (`AppViewModelTests.swift`); injected an explicit `now` into the speed-label
+  test so it no longer reads the real clock; switched setup fixture writes from
+  `try?` to `try` so a failed write surfaces. Made the CLI live-fallback test
+  falsifiable -- it now asserts the resolved image source is not the test fake
+  rather than `#expect(Bool(true))` (`CLIScaffoldTests.swift`). Changed the
+  `decodePlist` helper from `try!`/`as!` to a throwing helper called with `try`
+  so a malformed fixture fails the test instead of crashing the process; dropped
+  the duplicate `acceptRemovableNuance` test (identical inputs to
+  `acceptValidUSB`, which now documents the Removable=false nuance it already
+  covers) (`PreflightCoreTests.swift`). Made the silent DiskArbitration skip
+  visible via `withKnownIssue`, replaced `result.count == 1` + `result[0]` with a
+  structural `map(\.bsdName)` check, and dropped the live-enumerator dependency
+  from the pure `displayName` formatting tests (now call `diskDisplayName(for:)`
+  directly, with structural prefix/suffix/token checks and one documented
+  full-string lock) (`DiskSourceServiceTests.swift`). Removed redundant numeric
+  `exitCode.rawValue == N` asserts that duplicated the typed `== .someCase` check
+  on the line above (`VerifyCommandTests.swift`, `FlashCommandTests.swift`,
+  `FlashOrchestrationServiceTests.swift`); the numeric exit-code table stays
+  owned solely by `SeamSmokeTests`, which gained a comment citing
+  `Sources/USBImagerCore/CoreError.swift` as the panel-domain contract source of
+  truth. No production code changed. Verification: `swift build` -> "Build
+  complete!"; `swift test` -> "Test run with 355 tests in 86 suites passed",
+  exit code 0 (357 -> 355: one duplicate test removed, two phaseLabel tests
+  merged into one).
+
+- WP-snapshot-dedup-deadcode (task #13) verification: `swift build` -> "Build
+  complete!"; `swift test` -> "Test run with 357 tests in 86 suites passed",
+  exit code 0.
+
+- Added 7 tests (total 347 -> 354, none regressed). Core
+  (`Tests/USBImagerCoreTests/ChecksumServiceTests.swift`): a genuine Keychain access
+  error throws `CoreError` from `matchOutcome`; a true cache miss does not throw and
+  stays `.noOfficialChecksum` (new `ThrowingLoadAllKeychainBackend` fixture). AppUI
+  (`Tests/AppUITests/AppViewModelTests.swift`): a stat failure sets `currentError` to
+  `.badInput`; a later successful selection clears it (new
+  `FailThenSucceedImageSourceService`); `reset` clears it; a throwing `matchOutcome`
+  surfaces `currentError` while still resolving `.succeeded` (new
+  `SucceedingFlashOrchestrationService` + `ThrowingMatchOutcomeChecksumService`); a
+  clean success leaves `currentError` nil. Assertions check the error case
+  (non-nil/nil + `.badInput`), not user-facing strings or collection sizes.
+
 ## 2026-06-18
 
 ### Additions and New Features
+
+- Added `tools/authopen_fd_probe/` (task A1, WP-authopen-fd-spike): standalone
+  SCM_RIGHTS fd-passing harness for the authopen spike. `main.swift` provides
+  two modes: `selftest` (automated proof, no authopen, no device, no auth
+  prompt -- runs from any shell) and `authopen` (scaffolded interactive
+  `/usr/libexec/authopen -stdoutpipe` run for operator use). Uses `posix_spawn`
+  instead of `fork()` (unavailable in Swift 6) and hand-computed CMSG layout
+  constants (the CMSG_* function-like C macros are not importable into Swift).
+  Wired into `Package.swift` as `authopen_fd_probe` executable product/target
+  with its source at `tools/authopen_fd_probe/`. Self-test verified on Darwin
+  25.5.0 arm64 (12 checks, exit 0): fd passed from posix_spawn'd child to
+  parent over UNIX socketpair, read/write capability confirmed, fd usable after
+  sender exit (capability-lifetime proof), close returns 0, double-close returns
+  EBADF. `README.md` documents build steps, self-test expected output, and the
+  full operator preflight invariant checklist for sacrificial-USB raw-device
+  use in the three required launch contexts.
+
+- Added `Sources/AuthopenProbeCore/PreflightCore.swift` and
+  `Tests/AuthopenProbeCoreTests/PreflightCoreTests.swift` (fixture-tests):
+  extracted the probe's raw-device preflight DECISION logic out of the diskutil
+  I/O so it can be unit-tested with no hardware. The new `AuthopenProbeCore`
+  library holds the pure pieces -- `DiskIdentity`, the `PreflightRefusal` /
+  `PreflightDecision` types, `parseRawDevicePath` / `wholeDiskPath` /
+  `wholeDiskBSD`, `diskIdentity(fromPlist:wholeDiskBSD:)`,
+  `evaluateRawDevicePreflight(rawPath:plist:bootWholeBSD:)`, and
+  `identityMismatchFields(recorded:current:)` -- none of which spawn diskutil.
+  `tools/authopen_fd_probe/main.swift` now imports the library and its
+  `captureDiskIdentity` / `rawDevicePreflight` / `revalidateDiskIdentity`
+  functions are thin diskutil-fetch wrappers that delegate the accept/refuse
+  decision to the pure evaluator; the real `authopen <device>` refusals,
+  exit code 3, and printed reasons are byte-for-byte unchanged (verified for
+  `/dev/rdiskGARBAGE` and `/dev/disk4`). 22 fixture tests cover ACCEPT (valid
+  external USB, the Removable=false-but-RemovableMedia/Ejectable=true nuance, a
+  real-shape XML plist parsed via PropertyListSerialization), REFUSE (internal,
+  external-but-fixed, target==boot disk, unknown boot disk, malformed path,
+  buffered `/dev/diskN`, missing TotalSize), identity capture (UUID fallback),
+  and identity comparison (UUID/size/media-name mismatches reported per field).
+  Wired `AuthopenProbeCore` library + `AuthopenProbeCoreTests` test target into
+  `Package.swift`. `swift build` -> Build complete; `swift test` -> 347 tests in
+  84 suites passed (was 325); `swift run authopen_fd_probe selftest` -> ALL
+  CHECKS PASSED, exit 0 (unchanged). `PreflightRefusal` conforms to `Error` so
+  it can be a `Result` failure; test fixtures are built by functions rather than
+  module-level lets to satisfy Swift 6 strict-concurrency Sendable rules.
 
 - Refreshed `docs/CODE_ARCHITECTURE.md`: added USBImagerCore, USBImagerCLI, and USBImagerShots to
   the module table; updated the USBImagerApp row to `@main struct USBImagerApp: App`,
@@ -94,6 +450,16 @@
   body comment "Forward to the DiskModel module-level free function." to the file-scope
   `diskModelValidTargets` wrapper in `Sources/AppUI/AppViewModel.swift` to match its
   sibling wrappers in `DiskTargetService.swift`. Comment-only; `swift test` -> 325 passed.
+
+- Reconciled `docs/active_plans/decisions/authopen_hardware_runbook.md` preflight wording
+  with final probe code (task #31, doc-reconcile). Two targeted fixes: (1) added
+  "not an internal disk (Internal=false)" bullet to the preflight invariant list so the
+  documented set of conditions matches the independent `guard !internalFlag` check the code
+  enforces (main.swift lines 470-475); (2) corrected the revalidation-step description from
+  "BSD name, size, removable flag, and media identity" to "UUID/anchor, size, and media name"
+  to match the three fields `revalidateDiskIdentity` actually re-compares (main.swift lines
+  512-549: `diskUUID`, `totalSizeBytes`, `mediaName`). The Removable flag is checked once
+  during preflight, not re-checked at revalidation.
 
 ### Removals and Deprecations
 

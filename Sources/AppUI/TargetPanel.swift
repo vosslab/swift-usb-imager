@@ -7,6 +7,7 @@
 
 import DiskModel
 import SwiftUI
+import USBImagerCore
 
 // MARK: - TargetPanel
 
@@ -81,6 +82,13 @@ struct TargetPanel: View {
 
             // Collapsible checksum entry
             checksumSection
+
+            // Error badge: visible only for target-domain errors (helper unavailable,
+            // flash-write failures). Source and Verify domain errors are suppressed
+            // here so only contextually relevant errors appear in this panel.
+            if let error = vm.currentError, error.domain == .target {
+                ErrorBadge(message: userMessage(for: error))
+            }
         }
         .panelCard(tint: PanelAccent.target, isActive: isCurrent)
         .disabled(!isEnabled)
@@ -111,6 +119,9 @@ struct TargetPanel: View {
                 ForEach(vm.availableTargets) { disk in
                     DiskRow(
                         disk: disk,
+                        // Route the primary label through the core displayName helper
+                        // so the GUI and CLI share one canonical format.
+                        primaryLabel: vm.displayName(for: disk),
                         isSelected: vm.selectedTarget?.bsdName == disk.bsdName
                     )
                     .contentShape(Rectangle())
@@ -227,9 +238,18 @@ struct TargetPanel: View {
 
 // MARK: - DiskRow
 
-/// One row in the target list: bus icon, name, size, and selected highlight.
+/// One row in the target list: bus icon, human identity, volume/BSD name, and
+/// selected highlight.
+///
+/// Layout:
+///   PRIMARY   - vendor + model + size, via core `displayName(for:)`.
+///               Example: "SanDisk Ultra 32.0 GB"
+///   SECONDARY - volume label (when present) followed by the BSD name.
+///               Example: "UNTITLED - disk4"  or just "disk4" when unmounted.
 private struct DiskRow: View {
     let disk: DiskDescriptor
+    /// Human-readable primary label, composed by the core `displayName(for:)` helper.
+    let primaryLabel: String
     let isSelected: Bool
 
     private var busIcon: String {
@@ -240,6 +260,18 @@ private struct DiskRow: View {
         }
     }
 
+    /// Secondary line: volume label (if any) plus the BSD name as fallback anchor.
+    private var secondaryLabel: String {
+        let volumeLabel = disk.volumeLabel.trimmingCharacters(in: .whitespaces)
+        if volumeLabel.isEmpty {
+            // No volume label: just show the BSD name so the operator always has
+            // a unique identifier even for unmounted or unlabeled media.
+            return disk.bsdName
+        }
+        // Volume label present: "UNTITLED - disk4"
+        return "\(volumeLabel) - \(disk.bsdName)"
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: busIcon)
@@ -248,9 +280,11 @@ private struct DiskRow: View {
                 .imageScale(.medium)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(disk.bsdName)
+                // Primary: human identity (vendor + model + size).
+                Text(primaryLabel)
                     .font(.subheadline.bold())
-                Text(formatBytes(disk.sizeBytes))
+                // Secondary: volume label and BSD name for confirmation.
+                Text(secondaryLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

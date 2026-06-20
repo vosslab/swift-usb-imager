@@ -12,23 +12,6 @@
 import DiskModel
 import Foundation
 
-// MARK: - DiskSafety free-function wrapper
-
-/// File-local wrapper around the DiskModel `validTargets` free function.
-///
-/// Inside a protocol conformance body, a bare call to `validTargets(...)` would
-/// resolve to the `DiskTargetService` method on `self` (infinite recursion). This
-/// wrapper at file scope names the DiskModel free function unambiguously and is
-/// pure/synchronous so it does not carry actor isolation.
-private func safeDiskModelValidTargets(
-    from disks: [DiskDescriptor],
-    imageSizeBytes: Int,
-    sourceBackingBSDName: String?
-) -> [DiskDescriptor] {
-    // Forward to the DiskModel module-level free function.
-    return validTargets(from: disks, imageSizeBytes: imageSizeBytes, sourceBackingBSDName: sourceBackingBSDName)
-}
-
 // MARK: - BSD-name lookup helper
 
 /// Return the first disk in `disks` whose `bsdName` equals `bsdName`, or `nil`.
@@ -118,9 +101,10 @@ public struct DefaultDiskTargetService: DiskTargetService {
         imageSizeBytes: Int,
         sourceBackingBSDName: String?
     ) -> [DiskDescriptor] {
-        // Delegate via the file-scope wrapper that names the DiskModel free function.
-        // A direct bare call would self-resolve to this protocol method (infinite recursion).
-        let targets = safeDiskModelValidTargets(
+        // Delegate via the DiskModel module-level alias that names the free
+        // function. A direct bare `validTargets(...)` would self-resolve to this
+        // protocol method (infinite recursion).
+        let targets = diskModelValidTargets(
             from: disks,
             imageSizeBytes: imageSizeBytes,
             sourceBackingBSDName: sourceBackingBSDName
@@ -130,23 +114,13 @@ public struct DefaultDiskTargetService: DiskTargetService {
 
     /// A stable, GUI-neutral single-line display name for a disk.
     ///
-    /// Format: "<bsdName>  (<busProtocol>, <size>)"
-    ///
-    /// Examples:
-    ///   "disk4  (USB, 32.0 GB)"
-    ///   "disk5  (SD, 64.0 GB)"
-    ///   "disk6  (virtual, 500.3 GB)"
-    ///
-    /// The size uses decimal gigabytes (1 GB = 1,000,000,000 bytes) with one
-    /// decimal place, matching macOS Disk Utility conventions. The bus protocol
-    /// uses the `rawValue` string so the label stays stable across app updates.
+    /// Forwards to the canonical `DiskModel.diskDisplayName(for:)` so the CLI
+    /// `list` output, the GUI target row, and the screenshot harness all share one
+    /// formatter and produce identical strings.
     ///
     /// - Parameter disk: the disk to describe.
     /// - Returns: a human-readable single-line name.
     public func displayName(for disk: DiskDescriptor) -> String {
-        let gb = Double(disk.sizeBytes) / 1_000_000_000.0
-        let sizeString = String(format: "%.1f GB", gb)
-        let name = "\(disk.bsdName)  (\(disk.busProtocol.rawValue), \(sizeString))"
-        return name
+        diskDisplayName(for: disk)
     }
 }

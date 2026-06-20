@@ -9,6 +9,8 @@
 /// three `RejectionReason` values in the returned array, and every reason is
 /// displayed to the user.
 
+import Foundation
+
 // MARK: - Size constants
 
 /// The upper bound (exclusive) for a valid flash target, in decimal bytes.
@@ -158,4 +160,81 @@ public func validTargets(
         isValidTarget(disk, imageSizeBytes: imageSizeBytes, sourceBackingBSDName: sourceBackingBSDName)
     }
     return valid
+}
+
+/// Distinctly named alias for `validTargets(from:imageSizeBytes:sourceBackingBSDName:)`.
+///
+/// Every `DiskTargetService` conformer must filter through the DiskModel free
+/// function, but a bare `validTargets(...)` inside a conformance body resolves to
+/// the protocol method on `self` (infinite recursion). This module-level alias
+/// names the free function unambiguously so all conformers share one forwarding
+/// point instead of each defining a private file-scope wrapper.
+///
+/// - Parameters:
+///   - disks: The full list of detected disks.
+///   - imageSizeBytes: The byte length of the image that will be written.
+///   - sourceBackingBSDName: The BSD name of the disk the image was read from,
+///     or `nil` when the source is not a disk.
+/// - Returns: The subset of `disks` that pass all safety checks.
+///
+/// NOTE: This alias exists only as a recursion guard. Conformers call it instead
+/// of the bare `validTargets(...)`, whose unqualified name would self-resolve to
+/// the protocol method on `self` and recurse infinitely.
+public func diskModelValidTargets(
+    from disks: [DiskDescriptor],
+    imageSizeBytes: Int,
+    sourceBackingBSDName: String?
+) -> [DiskDescriptor] {
+    return validTargets(
+        from: disks,
+        imageSizeBytes: imageSizeBytes,
+        sourceBackingBSDName: sourceBackingBSDName
+    )
+}
+
+// MARK: - Display name
+
+/// A stable, GUI-neutral single-line display name for a disk.
+///
+/// Composes a human-readable identity from vendor, model, and size so the
+/// operator can identify the physical device without reading the BSD name. This
+/// is the one canonical formatter: `DiskTargetService.displayName(for:)`
+/// conformers forward here so the CLI `list` output, the GUI target row, and the
+/// screenshot harness all produce identical strings.
+///
+/// Format (when vendor and model are available):
+///   "<vendor> <model> <size>"    e.g. "SanDisk Ultra 32.0 GB"
+///
+/// Graceful degradation (missing fields):
+///   - Vendor empty, model present:  "<model> <size>"
+///   - Vendor present, model empty:  "<vendor> <size>"
+///   - Both empty:                   "<busProtocol> <size>"  e.g. "USB 32.0 GB"
+///
+/// Size uses decimal gigabytes (1 GB = 1,000,000,000 bytes) with one decimal
+/// place, matching macOS Disk Utility conventions.
+///
+/// - Parameter disk: the disk to describe.
+/// - Returns: a human-readable single-line name.
+public func diskDisplayName(for disk: DiskDescriptor) -> String {
+    let gb = Double(disk.sizeBytes) / 1_000_000_000.0
+    let sizeString = String(format: "%.1f GB", gb)
+    // Build the identity prefix from whatever human-readable strings are available.
+    let vendor = disk.vendor.trimmingCharacters(in: .whitespaces)
+    let model = disk.model.trimmingCharacters(in: .whitespaces)
+    let prefix: String
+    if !vendor.isEmpty && !model.isEmpty {
+        // Full identity: "SanDisk Ultra"
+        prefix = "\(vendor) \(model)"
+    } else if !model.isEmpty {
+        // Model only: "Ultra"
+        prefix = model
+    } else if !vendor.isEmpty {
+        // Vendor only: "SanDisk"
+        prefix = vendor
+    } else {
+        // No device strings; fall back to bus protocol token.
+        prefix = disk.busProtocol.rawValue.uppercased()
+    }
+    let name = "\(prefix) \(sizeString)"
+    return name
 }

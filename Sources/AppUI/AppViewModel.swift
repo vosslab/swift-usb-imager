@@ -68,6 +68,19 @@ public final class AppViewModel {
     /// Validation error from the most recent `setOfficialChecksum` call.
     public private(set) var checksumInputError: String?
 
+    /// The most recent typed workflow error surfaced by a source or checksum
+    /// operation, or `nil` when the last such operation succeeded.
+    ///
+    /// This is the observable error surface the audit asked for: a source-stat
+    /// failure (`selectSource`) or a Keychain trusted-cache access failure (the
+    /// post-flash `matchOutcome` probe) sets a typed `CoreError` here instead of
+    /// being swallowed. It is set on failure and cleared on a successful source
+    /// selection, a successful flash result, and `reset`, so a stale error never
+    /// outlives a later success. The error is the shared core taxonomy
+    /// (`CoreError`); later UI work (the inline error panel) renders it via the
+    /// core `userMessage(for:)` mapping rather than inventing its own copy.
+    public private(set) var currentError: CoreError?
+
     // MARK: - Private dependencies (USBImagerCore services)
 
     /// Stats the source image file (byte length). Wraps `FileManager` in core.
@@ -218,8 +231,10 @@ public final class AppViewModel {
     /// length (used for target filtering and as the advisory denominator). Resets
     /// target selection, then refreshes the target list.
     ///
-    /// A missing or unreadable file logs a clear line and leaves the view model
-    /// on step 1 (source unselected). Only a successful stat advances to step 2.
+    /// A missing or unreadable file surfaces a typed `CoreError` on `currentError`
+    /// and leaves the view model on step 1 (source unselected). Only a successful
+    /// stat advances to step 2; on success any prior error is cleared so a stale
+    /// error never outlives a later successful selection.
     ///
     /// - Parameter url: the file URL chosen by the user.
     public func selectSource(_ url: URL) async {
@@ -228,10 +243,16 @@ public final class AppViewModel {
         do {
             byteLength = try imageSourceService.byteLength(of: url)
         } catch {
-            // Source is missing or unreadable: stay on step 1 and log.
-            print("[AppViewModel] selectSource: source missing/unreadable: \(url.path); staying on step 1. \(error)")
+            // Source is missing or unreadable: surface the typed error so the UI
+            // can render it, then stay on step 1. The core image-source service
+            // throws CoreError.badInput; map any other error to the same case so
+            // the observable surface is always a typed CoreError.
+            currentError = (error as? CoreError)
+                ?? .badInput(message: "Could not read the source image at \(url.path): \(error).")
             return
         }
+        // Success: a fresh, valid selection clears any prior surfaced error.
+        currentError = nil
         sourceURL = url
         sourceImageBytes = byteLength
         selectedTarget = nil
@@ -249,6 +270,18 @@ public final class AppViewModel {
     public func refreshTargets() async {
         let disks = await diskTargetService.snapshotDisks()
         updateTargetList(from: disks)
+    }
+
+    /// Human-readable display name for a disk, forwarded from the core service.
+    ///
+    /// The primary text shown in target rows. Delegates to
+    /// `diskTargetService.displayName(for:)` so the GUI and CLI share one
+    /// canonical label rather than each re-deriving the format.
+    ///
+    /// - Parameter disk: the disk to describe.
+    /// - Returns: a single-line human-readable name.
+    public func displayName(for disk: DiskDescriptor) -> String {
+        diskTargetService.displayName(for: disk)
     }
 
     /// Choose the write target.
@@ -401,6 +434,7 @@ public final class AppViewModel {
         officialChecksumSource = nil
         expectedDigest = nil
         checksumInputError = nil
+        currentError = nil
         flashState = .idle
         // Re-apply target filtering against empty source.
         Task { await refreshTargets() }
@@ -465,6 +499,11 @@ public final class AppViewModel {
     /// Resolve checksum/cache match for a successful write, offer to cache a
     /// confirmed match, and advance to `.succeeded`.
     private func applySuccess(deviceSHA512: String) async {
+        // The write completed, so any earlier surfaced error is stale; clear it.
+        // A Keychain probe failure below re-sets a typed error without un-marking
+        // the successful write.
+        currentError = nil
+
         guard let deviceDigest = SHA512Digest(hexString: deviceSHA512) else {
             // No usable device digest: report success with nothing to compare.
             flashState = .succeeded(deviceSHA512: deviceSHA512, matchOutcome: .noOfficialChecksum)
@@ -472,11 +511,26 @@ public final class AppViewModel {
         }
 
         // Core resolves the outcome against the official digest then the cache.
-        let coreOutcome = checksumService.matchOutcome(
-            deviceDigest: deviceDigest,
-            officialDigest: expectedDigest,
-            imageByteLength: sourceImageBytes
-        )
+        // A genuine Keychain access error throws here rather than silently
+        // collapsing into a cache miss; surface it on the observable error while
+        // still resolving the success state (the write itself succeeded). A true
+        // cache miss does not throw and resolves to `.noOfficialChecksum`.
+        let coreOutcome: USBImagerCore.ChecksumMatchOutcome
+        do {
+            coreOutcome = try checksumService.matchOutcome(
+                deviceDigest: deviceDigest,
+                officialDigest: expectedDigest,
+                imageByteLength: sourceImageBytes
+            )
+        } catch {
+            // The cache probe failed for a real reason (not a miss). Surface the
+            // typed error and present the verdict as "no official checksum" so the
+            // success state resolves without claiming an unverified trusted hit.
+            currentError = (error as? CoreError)
+                ?? .badInput(message: "Trusted-cache lookup failed: \(error).")
+            flashState = .succeeded(deviceSHA512: deviceSHA512, matchOutcome: .noOfficialChecksum)
+            return
+        }
         let presentationOutcome = Self.presentationOutcome(for: coreOutcome)
 
         // If the user supplied a checksum and it matched, cache it. The "offer to
@@ -633,20 +687,8 @@ private struct ClosureFlashEngineFactory: FlashEngineFactory {
 /// `snapshotDisks()` returns an empty list, so `availableTargets` stays empty and
 /// `selectTarget`/`displayName` are never reached through the public flow. The
 /// pure `validTargets` filter still forwards to the same `DiskModel` free function
-/// the core service uses, so no safety logic is duplicated. `displayName` mirrors
-/// the core service's documented format for the unreachable case.
-/// File-scope wrapper naming the `DiskModel` `validTargets` free function so the
-/// `EmptyDiskTargetService.validTargets` method can forward to it without the bare
-/// call self-resolving to the protocol method.
-private func diskModelValidTargets(
-    from disks: [DiskDescriptor],
-    imageSizeBytes: Int,
-    sourceBackingBSDName: String?
-) -> [DiskDescriptor] {
-    // Forward to the DiskModel module-level free function.
-    return validTargets(from: disks, imageSizeBytes: imageSizeBytes, sourceBackingBSDName: sourceBackingBSDName)
-}
-
+/// the core service uses, so no safety logic is duplicated. `displayName` forwards
+/// to the same canonical formatter for the unreachable case.
 private struct EmptyDiskTargetService: DiskTargetService {
 
     func snapshotDisks() async -> [DiskDescriptor] {
@@ -658,9 +700,8 @@ private struct EmptyDiskTargetService: DiskTargetService {
         imageSizeBytes: Int,
         sourceBackingBSDName: String?
     ) -> [DiskDescriptor] {
-        // Forward to the same DiskModel free function the core service delegates
-        // to, via a file-scope wrapper so the bare name does not self-resolve to
-        // this protocol method (infinite recursion).
+        // Forward to the DiskModel module-level alias so the bare name does not
+        // self-resolve to this protocol method (infinite recursion).
         diskModelValidTargets(
             from: disks,
             imageSizeBytes: imageSizeBytes,
@@ -669,8 +710,7 @@ private struct EmptyDiskTargetService: DiskTargetService {
     }
 
     func displayName(for disk: DiskDescriptor) -> String {
-        let gb = Double(disk.sizeBytes) / 1_000_000_000.0
-        let sizeString = String(format: "%.1f GB", gb)
-        return "\(disk.bsdName)  (\(disk.busProtocol.rawValue), \(sizeString))"
+        // Forward to the one canonical DiskModel formatter for the unreachable path.
+        diskDisplayName(for: disk)
     }
 }

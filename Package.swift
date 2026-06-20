@@ -21,6 +21,11 @@ let package = Package(
         .executable(name: "USBImagerApp",  targets: ["USBImagerApp"]),
         .executable(name: "usbimager",     targets: ["USBImagerCLI"]),
         .executable(name: "USBImagerShots", targets: ["USBImagerShots"]),
+        // Spike probe executable: kept out of the main app/test targets.
+        // AuthopenProbeCore is intentionally NOT a published product -- it is an
+        // internal spike target consumed only by authopen_fd_probe and its
+        // hardware-free tests, so it is declared as a target below, not here.
+        .executable(name: "authopen_fd_probe", targets: ["authopen_fd_probe"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
@@ -97,6 +102,29 @@ let package = Package(
             path: "Sources/USBImagerShots"
         ),
 
+        // MARK: - Spike probe (kept OUT of the main swift test lane)
+        //
+        // authopen_fd_probe: standalone SCM_RIGHTS fd-passing harness for the
+        // WP-authopen-fd-spike (task A1). No dependency on any app target.
+        // Build:  swift build --target authopen_fd_probe
+        // Run:    .build/debug/authopen_fd_probe selftest
+        // See:    tools/authopen_fd_probe/README.md
+        //
+        // AuthopenProbeCore holds the pure (hardware-free) preflight decision
+        // logic so its accept/refuse behavior can be unit-tested against saved
+        // diskutil plist fixtures with no real USB. The executable depends on it
+        // and delegates the decision to it; an executableTarget cannot itself be
+        // imported by a test target, which is why the pure logic lives here.
+        .target(
+            name: "AuthopenProbeCore",
+            path: "Sources/AuthopenProbeCore"
+        ),
+        .executableTarget(
+            name: "authopen_fd_probe",
+            dependencies: ["AuthopenProbeCore"],
+            path: "tools/authopen_fd_probe"
+        ),
+
         // MARK: - Test targets
         .testTarget(
             name: "DiskModelTests",
@@ -148,6 +176,12 @@ let package = Package(
                 "KeychainStore",
             ],
             path: "Tests/USBImagerCLITests"
+        ),
+        // Hardware-free fixture tests for the probe preflight decision logic.
+        .testTarget(
+            name: "AuthopenProbeCoreTests",
+            dependencies: ["AuthopenProbeCore"],
+            path: "Tests/AuthopenProbeCoreTests"
         ),
     ]
 )

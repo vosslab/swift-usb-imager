@@ -162,10 +162,10 @@ struct FlashOrchestrationServiceTests {
         )
 
         #expect(result == .failure(error: .helperUnavailable(message: "no helper for test")))
-        // Prove the CLI exit-code contract end to end for the no-helper path.
+        // Prove the typed CLI exit-code mapping for the no-helper path; the numeric
+        // rawValue table is owned by SeamSmokeTests.
         if case .failure(let error) = result {
             #expect(error.exitCode == .helperUnavailable)
-            #expect(error.exitCode.rawValue == 3)
         } else {
             Issue.record("expected a failure result")
         }
@@ -251,12 +251,9 @@ struct FlashOrchestrationServiceTests {
             progress: { _ in }
         )
 
+        // The typed result equality proves the verificationMismatch case; the
+        // numeric exit-code table is owned by SeamSmokeTests.
         #expect(result == .failure(error: .verificationMismatch(expected: "bbbb", actual: "aaaa")))
-        if case .failure(let error) = result {
-            #expect(error.exitCode.rawValue == 1)
-        } else {
-            Issue.record("expected a failure result")
-        }
     }
 
     @Test("Read-back match (case-insensitive) yields success")
@@ -301,12 +298,9 @@ struct FlashOrchestrationServiceTests {
             progress: { _ in }
         )
 
+        // The typed result equality proves the flashFailed case; the numeric
+        // exit-code table is owned by SeamSmokeTests.
         #expect(result == .failure(error: .flashFailed(message: "device write error")))
-        if case .failure(let error) = result {
-            #expect(error.exitCode.rawValue == 4)
-        } else {
-            Issue.record("expected a failure result")
-        }
     }
 
     @Test("Connection-failed maps to .flashFailed via userMessage wording")
@@ -347,12 +341,9 @@ struct FlashOrchestrationServiceTests {
             progress: { _ in }
         )
 
+        // The typed result equality proves the cancelled case; the numeric
+        // exit-code table is owned by SeamSmokeTests.
         #expect(result == .failure(error: .cancelled))
-        if case .failure(let error) = result {
-            #expect(error.exitCode.rawValue == 5)
-        } else {
-            Issue.record("expected a failure result")
-        }
     }
 
     @Test("userMessage covers every FlashEngineError case with non-empty wording")
